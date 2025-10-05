@@ -3,4 +3,6 @@
 !stratz_scraper/
 !stratz_scraper/**
 !**/*.py
+!requirements.txt
+!.env.example
 **/__pycache__

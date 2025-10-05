@@ -8,16 +8,28 @@ import threading
 import time
 from typing import Iterable, Sequence
 
+from dotenv import load_dotenv
 from psycopg import Connection, Cursor, Error, connect, errors
 from psycopg.rows import dict_row
+
+load_dotenv()
 
 DB_PATH = Path("dota.db")
 INITIAL_PLAYER_ID = 293053907
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/stratz_scraper",
-)
+def _build_database_url() -> str:
+    env_database_url = os.environ.get("DATABASE_URL")
+    if env_database_url:
+        return env_database_url
+    user = os.environ.get("POSTGRES_USER", "postgres")
+    password = os.environ.get("POSTGRES_PASSWORD", "postgres")
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    port = os.environ.get("POSTGRES_PORT", "5432")
+    database = os.environ.get("POSTGRES_DB", "stratz_scraper")
+    return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+
+DATABASE_URL = _build_database_url()
 
 _THREAD_LOCAL = threading.local()
 _SCHEMA_INITIALIZED = False
