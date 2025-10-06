@@ -10,6 +10,7 @@ from ..database import (
     db_connection,
     release_incomplete_assignments,
     retryable_execute,
+    row_value,
 )
 
 ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
@@ -124,7 +125,7 @@ def _assign_discovery(cur) -> dict | None:
     depth_value = assigned["depth"]
     return {
         "type": "discover_matches",
-        "steamAccountId": int(assigned["steamAccountId"]),
+        "steamAccountId": int(row_value(assigned, "steamAccountId")),
         "depth": int(depth_value) if depth_value is not None else 0,
     }
 
@@ -182,7 +183,7 @@ def _assign_next_hero(cur) -> dict | None:
             retry_interval=ASSIGNMENT_RETRY_INTERVAL,
         ).fetchone()
         if assigned_row:
-            steam_account_id = int(assigned_row["steamAccountId"])
+            steam_account_id = int(row_value(assigned_row, "steamAccountId"))
             retryable_execute(
                 cur,
                 """
@@ -269,7 +270,9 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
                     if assigned_row:
                         candidate_payload = {
                             "type": "fetch_hero_stats",
-                            "steamAccountId": int(assigned_row["steamAccountId"]),
+                            "steamAccountId": int(
+                                row_value(assigned_row, "steamAccountId")
+                            ),
                         }
 
                 if candidate_payload is None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 import os
 import threading
@@ -42,6 +43,20 @@ def _create_connection(*, autocommit: bool) -> Connection:
     connection = connect(DATABASE_URL, autocommit=autocommit)
     connection.row_factory = dict_row
     return connection
+
+
+def row_value(row: Mapping[str, object] | object, key: str) -> object:
+    """Return a column value from a database row regardless of key casing."""
+
+    if isinstance(row, Mapping):
+        mapping = row
+    else:  # pragma: no cover - defensive for unexpected row types
+        mapping = dict(row)
+
+    for candidate in (key, key.lower(), key.upper()):
+        if candidate in mapping:
+            return mapping[candidate]
+    raise KeyError(key)
 
 
 def ensure_schema_exists() -> None:
