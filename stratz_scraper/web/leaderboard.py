@@ -16,12 +16,14 @@ def fetch_hero_leaderboard(slug: str) -> Optional[Tuple[str, str, List[dict]]]:
     if not hero_entry:
         return None
     hero_id, hero_name = hero_entry
+    if hero_id == 0:
+        return None
     with db_connection() as conn:
         rows = conn.execute(
             """
             SELECT steamAccountId, matches, wins
             FROM hero_top100
-            WHERE heroId=%s
+            WHERE heroId=%s AND heroId<>0
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
             LIMIT 100
             """,
@@ -44,6 +46,7 @@ def fetch_overall_leaderboard() -> List[Dict[str, object]]:
             """
             SELECT heroId, steamAccountId, matches, wins
             FROM hero_top100
+            WHERE heroId<>0
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
             LIMIT 100
             """
@@ -82,7 +85,7 @@ def fetch_best_payload() -> List[Dict]:
                     ) AS rn
                 FROM hero_top100
             ) ranked
-            WHERE rn = 1
+            WHERE rn = 1 AND heroId<>0
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
             """
         ).fetchall()
