@@ -401,14 +401,20 @@ def refresh_leaderboard_views(*, concurrently: bool = True) -> None:
     connection: Connection | None = None
     try:
         connection = _create_connection(autocommit=True)
-        clause = "CONCURRENTLY " if concurrently else ""
         with connection.cursor() as cur:
             for view in ("public.hero_leaderboard", "public.overall_leaderboard"):
                 try:
+                    clause = "CONCURRENTLY " if concurrently else ""
                     retryable_execute(
                         cur,
                         f"REFRESH MATERIALIZED VIEW {clause}{view}",
                     )
+                except errors.FeatureNotSupported as exc:
+                    if not concurrently or "CONCURRENTLY" not in str(exc):
+                        raise
+                    # The view has not been populated yet; populate it without
+                    # CONCURRENTLY so future refreshes can use it safely.
+                    retryable_execute(cur, f"REFRESH MATERIALIZED VIEW {view}")
                 except errors.UndefinedTable:
                     # The materialized view has not been created yet; skip.
                     continue
