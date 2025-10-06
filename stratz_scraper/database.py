@@ -367,17 +367,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
-                -- stratz_scraper.web.leaderboard.fetch_best_payload
-                CREATE INDEX IF NOT EXISTS idx_best_leaderboard
-                    ON best (
-                        matches DESC,
-                        wins DESC,
-                        hero_id
-                    )
-                """
-            )
-            cur.execute(
-                """
                 -- stratz_scraper.web.leaderboard.fetch_hero_leaderboard
                 CREATE INDEX IF NOT EXISTS idx_hero_stats_leaderboard
                     ON hero_stats (
