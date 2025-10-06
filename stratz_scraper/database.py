@@ -77,6 +77,12 @@ def ensure_schema_exists() -> None:
         except Exception:
             conn.rollback()
             raise
+    try:
+        refresh_leaderboard_views()
+    except Exception:
+        # If the materialized views are unavailable during initialization we
+        # still want the application to start. A background worker will retry.
+        pass
     _SCHEMA_INITIALIZED = True
 
 
@@ -334,8 +340,30 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             cur.execute(
                 """
                 -- stratz_scraper.web.leaderboard.fetch_hero_leaderboard
-                CREATE INDEX IF NOT EXISTS idx_hero_stats_leaderboard
-                    ON hero_stats (
+                DROP INDEX IF EXISTS public.idx_hero_stats_leaderboard
+                """
+            )
+            cur.execute(
+                """
+                -- stratz_scraper.web.leaderboard.fetch_overall_leaderboard
+                DROP INDEX IF EXISTS public.idx_hero_stats_order
+                """
+            )
+            cur.execute(
+                """
+                -- Materialized view backing hero leaderboards
+                CREATE MATERIALIZED VIEW IF NOT EXISTS public.hero_leaderboard AS
+                SELECT heroId, steamAccountId, matches, wins
+                FROM public.hero_stats
+                ORDER BY heroId, matches DESC, wins DESC, steamAccountId
+                WITH NO DATA
+                """
+            )
+            cur.execute(
+                """
+                -- Supports concurrent refreshes and ordered lookups
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_hero_leaderboard_pk
+                    ON public.hero_leaderboard (
                         heroId,
                         matches DESC,
                         wins DESC,
@@ -345,19 +373,51 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
-                -- stratz_scraper.web.leaderboard.fetch_overall_leaderboard
-                CREATE INDEX IF NOT EXISTS idx_hero_stats_order
-                    ON hero_stats (
-                        matches DESC,
-                        wins DESC,
-                        steamAccountId ASC
-                    )
+                -- Materialized view backing overall leaderboards
+                CREATE MATERIALIZED VIEW IF NOT EXISTS public.overall_leaderboard AS
+                SELECT steamAccountId, heroId, matches, wins
+                FROM public.hero_stats
+                ORDER BY matches DESC, wins DESC, steamAccountId
+                LIMIT 100
+                WITH NO DATA
+                """
+            )
+            cur.execute(
+                """
+                -- Provides stable ordering and supports concurrent refreshes
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_overall_leaderboard_pk
+                    ON public.overall_leaderboard (steamAccountId, heroId)
                 """
             )
     finally:
         if close_after:
             existing.commit()
             existing.close()
+
+
+def refresh_leaderboard_views(*, concurrently: bool = True) -> None:
+    """Refresh leaderboard materialized views."""
+
+    connection: Connection | None = None
+    try:
+        connection = _create_connection(autocommit=True)
+        clause = "CONCURRENTLY " if concurrently else ""
+        with connection.cursor() as cur:
+            for view in ("public.hero_leaderboard", "public.overall_leaderboard"):
+                try:
+                    retryable_execute(
+                        cur,
+                        f"REFRESH MATERIALIZED VIEW {clause}{view}",
+                    )
+                except errors.UndefinedTable:
+                    # The materialized view has not been created yet; skip.
+                    continue
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Error:  # pragma: no cover - cleanup best effort
+                pass
 
 
 def release_incomplete_assignments(
@@ -399,6 +459,7 @@ __all__ = [
     "ensure_schema_exists",
     "ensure_schema",
     "ensure_indexes",
+    "refresh_leaderboard_views",
     "release_incomplete_assignments",
     "retryable_execute",
     "retryable_executemany",

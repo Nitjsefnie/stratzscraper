@@ -20,7 +20,7 @@ def fetch_hero_leaderboard(slug: str) -> Optional[Tuple[str, str, List[dict]]]:
         rows = conn.execute(
             """
             SELECT steamAccountId, matches, wins
-            FROM hero_stats
+            FROM hero_leaderboard
             WHERE heroId=%s
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
             LIMIT 100
@@ -43,9 +43,8 @@ def fetch_overall_leaderboard() -> List[Dict[str, object]]:
         rows = conn.execute(
             """
             SELECT steamAccountId, matches, wins, heroId
-            FROM hero_stats
+            FROM overall_leaderboard
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
-            LIMIT 100
             """
         ).fetchall()
     players: List[Dict[str, object]] = []

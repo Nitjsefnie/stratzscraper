@@ -18,6 +18,7 @@ from .leaderboard import (
     fetch_hero_leaderboard,
     fetch_overall_leaderboard,
 )
+from .leaderboard_refresh import ensure_leaderboard_refresh_scheduler
 from .progress import fetch_progress
 from .request_utils import is_local_request
 from .seed import seed_players
@@ -36,6 +37,7 @@ def create_app() -> Flask:
 
     release_incomplete_assignments()
     ensure_assignment_cleanup_scheduler()
+    ensure_leaderboard_refresh_scheduler()
 
     @app.teardown_appcontext
     def _teardown_connections(exception: object | None) -> None:
