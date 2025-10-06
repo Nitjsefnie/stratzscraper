@@ -272,17 +272,15 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             cur.execute(
                 "UPDATE players SET seen_count=0 WHERE seen_count IS NULL"
             )
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_players_hero_queue
-                    ON players (
-                        hero_done,
-                        assigned_to,
-                        COALESCE(depth, 0),
-                        steamAccountId
-                    )
-                """
-            )
+            for obsolete_index in (
+                "idx_players_hero_queue",
+                "idx_players_hero_queue_seen",
+                "idx_players_hero_cursor",
+                "idx_players_hero_refresh",
+            ):
+                cur.execute(
+                    "DROP INDEX IF EXISTS " + obsolete_index
+                )
             cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_assignment_cursor
@@ -296,43 +294,10 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_players_hero_queue_seen
-                    ON players (
-                        hero_done,
-                        assigned_to,
-                        seen_count DESC,
-                        COALESCE(depth, 0),
-                        steamAccountId
-                    )
-                """
-            )
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_players_hero_cursor
-                    ON players (steamAccountId)
-                    WHERE hero_done=FALSE AND assigned_to IS NULL
-                """
-            )
-            cur.execute(
-                """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_pending
                     ON players (steamAccountId)
                     WHERE hero_done=FALSE
                 """
-            )
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_players_hero_refresh
-                    ON players (
-                        hero_done,
-                        assigned_to,
-                        COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz),
-                        steamAccountId
-                    )
-                """
-            )
-            cur.execute(
-                "DROP INDEX IF EXISTS idx_players_hero_refresh_seen"
             )
             cur.execute(
                 """
@@ -346,12 +311,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                     )
                     WHERE hero_done=TRUE AND assigned_to IS NULL
                 """
-            )
-            cur.execute(
-                "DROP INDEX IF EXISTS idx_players_discover_queue"
-            )
-            cur.execute(
-                "DROP INDEX IF EXISTS idx_players_discover_queue_seen"
             )
             cur.execute(
                 """
@@ -368,9 +327,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                       AND discover_done=FALSE
                       AND (assigned_to IS NULL OR assigned_to='discover')
                 """
-            )
-            cur.execute(
-                "DROP INDEX IF EXISTS idx_players_assignment_state"
             )
             cur.execute(
                 """
