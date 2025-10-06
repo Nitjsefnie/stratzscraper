@@ -274,6 +274,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.assignment._assign_next_hero scans the hero queue by steamAccountId
                 CREATE INDEX IF NOT EXISTS idx_players_hero_assignment_cursor
                     ON players (
                         hero_done,
@@ -285,6 +286,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.assignment.assign_next_task
                 CREATE INDEX IF NOT EXISTS idx_players_hero_pending
                     ON players (steamAccountId)
                     WHERE hero_done=FALSE
@@ -292,6 +294,15 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.assignment._assign_next_hero fetches the next unassigned hero
+                CREATE INDEX IF NOT EXISTS idx_players_hero_unassigned_queue
+                    ON players (steamAccountId)
+                    WHERE hero_done=FALSE AND assigned_to IS NULL
+                """
+            )
+            cur.execute(
+                """
+                -- stratz_scraper.web.assignment.assign_next_task
                 CREATE INDEX IF NOT EXISTS idx_players_hero_refresh_seen
                     ON players (
                         hero_done,
@@ -305,6 +316,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.assignment._assign_discovery
                 CREATE INDEX IF NOT EXISTS idx_players_discover_assignment
                     ON players (
                         hero_done,
@@ -321,6 +333,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.progress.fetch_progress
                 CREATE INDEX IF NOT EXISTS idx_players_hero_completed
                     ON players (steamAccountId)
                     WHERE hero_done=TRUE
@@ -328,6 +341,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.progress.fetch_progress
                 CREATE INDEX IF NOT EXISTS idx_players_discover_completed
                     ON players (steamAccountId)
                     WHERE discover_done=TRUE
@@ -335,6 +349,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.database.release_incomplete_assignments
                 CREATE INDEX IF NOT EXISTS idx_players_assignment_state
                     ON players (
                         assigned_to,
@@ -345,12 +360,14 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- meta lookups throughout the scheduler (e.g. assignment cursor updates)
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_key
                     ON meta (key)
                 """
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.leaderboard.fetch_best_payload
                 CREATE INDEX IF NOT EXISTS idx_best_leaderboard
                     ON best (
                         matches DESC,
@@ -361,6 +378,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.leaderboard.fetch_hero_leaderboard
                 CREATE INDEX IF NOT EXISTS idx_hero_stats_leaderboard
                     ON hero_stats (
                         heroId,
@@ -372,6 +390,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.leaderboard.fetch_overall_leaderboard
                 CREATE INDEX IF NOT EXISTS idx_hero_stats_order
                     ON hero_stats (
                         matches DESC,
