@@ -158,7 +158,7 @@ def _assign_next_hero(cur) -> dict | None:
     except (TypeError, ValueError):
         last_cursor = 0
 
-    for offset in (last_cursor, 0):
+    for _ in range(2):
         assigned_row = retryable_execute(
             cur,
             """
@@ -170,16 +170,32 @@ def _assign_next_hero(cur) -> dict | None:
                   AND steamAccountId > %s
                 ORDER BY steamAccountId ASC
                 LIMIT 1
+            ),
+            fallback AS (
+                SELECT steamAccountId
+                FROM players
+                WHERE hero_done=FALSE
+                  AND assigned_to IS NULL
+                  AND steamAccountId > 0
+                ORDER BY steamAccountId ASC
+                LIMIT 1
+            ),
+            selected AS (
+                SELECT steamAccountId FROM candidate
+                UNION ALL
+                SELECT steamAccountId FROM fallback
+                WHERE NOT EXISTS (SELECT 1 FROM candidate)
+                LIMIT 1
             )
             UPDATE players
             SET assigned_to='hero',
                 assigned_at=CURRENT_TIMESTAMP
-            WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+            WHERE steamAccountId IN (SELECT steamAccountId FROM selected)
               AND hero_done=FALSE
               AND assigned_to IS NULL
             RETURNING steamAccountId
             """,
-            (offset,),
+            (last_cursor,),
             retry_interval=ASSIGNMENT_RETRY_INTERVAL,
         ).fetchone()
         if assigned_row:
