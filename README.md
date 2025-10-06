@@ -11,10 +11,10 @@ The Flask application serves both the single-page front-end and the JSON API use
 - `GET /`: Renders the operator dashboard and exposes a local-only seeding form when the request originates from localhost.
 - `POST /task`: Returns the next unit of work. While any account has unfinished hero statistics, workers receive `fetch_hero_stats` tasks. When every player is marked complete for hero stats the API hands out `discover_matches` tasks instead.
 - `POST /task/reset`: Releases a task back into the queue. Hero tasks clear any partial hero rows, discovery tasks re-open the player for future crawling, and unknown task types simply clear the assignment flag.
-- `POST /submit`: Accepts either hero statistics or discovery payloads. Hero submissions upsert per-hero performance, update the leaderboard, and flip the player's `hero_done` flag. Discovery submissions insert any newly found accounts (with incremented depth) and mark the submitting account's discovery phase as complete.
+- `POST /submit`: Accepts either hero statistics or discovery payloads. Hero submissions upsert per-hero performance, rebuild the per-hero top-100 cache, and flip the player's `hero_done` flag. Discovery submissions insert any newly found accounts (with incremented depth) and mark the submitting account's discovery phase as complete.
 - `GET /progress`: Reports total players along with counts of accounts that have completed hero statistics and discovery.
 - `GET /seed`: Local-only endpoint for inserting a contiguous range of seed accounts at depth 0.
-- `GET /best` and `/leaderboards`: Render aggregated leaderboards for all heroes or individual picks.
+- `GET /best` and `/leaderboards`: Render aggregated leaderboards sourced from the cached per-hero top-100 table.
 
 ### Database Layer (`stratz_scraper/database.py`)
 The database module now targets PostgreSQL via `psycopg`. Connections are pooled per-thread for writers and opened on-demand for read-only operations. `ensure_schema_exists()` creates the schema when needed and makes sure all indexes exist. The module exposes helpers for retrying statements that might be affected by transient locks, performing batched writes inside transactions, and releasing stale task assignments.
@@ -45,8 +45,11 @@ When deploying behind a proxy, forward the original client IP so the `/seed` end
 |-------|---------|-------------|
 | `players` | BFS queue of discovered accounts with per-phase status. | `steamAccountId`, `depth`, `hero_done`, `discover_done`, `assigned_to`, `assigned_at` |
 | `hero_stats` | Hero performance per account. | `steamAccountId`, `heroId`, `matches`, `wins` |
-| `best` | Best-performing player per hero. | `hero_id`, `player_id`, `matches`, `wins` |
+| `hero_top100` | Top 100 players per hero (cached from `hero_stats`). | `heroId`, `steamAccountId`, `matches`, `wins` |
 | `meta` | Key/value metadata for scheduler features. | `key`, `value` |
+
+`hero_top100` maxes out at roughly 20k rows (100 accounts per hero) so sequential scans are sufficient and no additional indexes
+are required.
 
 ## Security and Error Handling Considerations
 - **Token Privacy**: Stratz API tokens remain in the browser's `localStorage` and are only transmitted in GraphQL requests to Stratz. Removing a token row deletes it from storage.

@@ -20,7 +20,7 @@ def fetch_hero_leaderboard(slug: str) -> Optional[Tuple[str, str, List[dict]]]:
         rows = conn.execute(
             """
             SELECT steamAccountId, matches, wins
-            FROM hero_leaderboard
+            FROM hero_top100
             WHERE heroId=%s
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
             LIMIT 100
@@ -42,9 +42,10 @@ def fetch_overall_leaderboard() -> List[Dict[str, object]]:
     with db_connection() as conn:
         rows = conn.execute(
             """
-            SELECT steamAccountId, matches, wins, heroId
-            FROM overall_leaderboard
+            SELECT heroId, steamAccountId, matches, wins
+            FROM hero_top100
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
+            LIMIT 100
             """
         ).fetchall()
     players: List[Dict[str, object]] = []
@@ -66,11 +67,37 @@ def fetch_overall_leaderboard() -> List[Dict[str, object]]:
 
 def fetch_best_payload() -> List[Dict]:
     with db_connection() as conn:
-        rows = conn.execute("SELECT * FROM best ORDER BY matches DESC").fetchall()
+        rows = conn.execute(
+            """
+            SELECT heroId, steamAccountId, matches, wins
+            FROM (
+                SELECT
+                    heroId,
+                    steamAccountId,
+                    matches,
+                    wins,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY heroId
+                        ORDER BY matches DESC, wins DESC, steamAccountId
+                    ) AS rn
+                FROM hero_top100
+            ) ranked
+            WHERE rn = 1
+            ORDER BY matches DESC, wins DESC, steamAccountId ASC
+            """
+        ).fetchall()
     payload: List[Dict] = []
     for row in rows:
-        row_dict = dict(row)
-        name = row_dict.get("hero_name")
-        row_dict["hero_slug"] = hero_slug(name) if isinstance(name, str) else None
-        payload.append(row_dict)
+        hero_id = row_value(row, "heroId")
+        hero_name = HEROES.get(hero_id)
+        payload.append(
+            {
+                "hero_id": hero_id,
+                "hero_name": hero_name,
+                "player_id": row_value(row, "steamAccountId"),
+                "matches": row["matches"],
+                "wins": row["wins"],
+                "hero_slug": hero_slug(hero_name) if isinstance(hero_name, str) else None,
+            }
+        )
     return payload

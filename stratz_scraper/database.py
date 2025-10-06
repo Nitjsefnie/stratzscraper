@@ -64,6 +64,7 @@ def ensure_schema_exists() -> None:
     global _SCHEMA_INITIALIZED
     if _SCHEMA_INITIALIZED:
         return
+    refresh_needed = False
     with _create_connection(autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -73,16 +74,20 @@ def ensure_schema_exists() -> None:
         try:
             ensure_schema(existing=conn)
             ensure_indexes(existing=conn)
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM public.hero_top100 LIMIT 1")
+                refresh_needed = cur.fetchone() is None
             conn.commit()
         except Exception:
             conn.rollback()
             raise
-    try:
-        refresh_leaderboard_views()
-    except Exception:
-        # If the materialized views are unavailable during initialization we
-        # still want the application to start. A background worker will retry.
-        pass
+    if refresh_needed:
+        try:
+            refresh_leaderboard_views()
+        except Exception:
+            # If the cache refresh fails during initialization we still allow the
+            # application to start. Submissions keep the leaderboard up to date.
+            pass
     _SCHEMA_INITIALIZED = True
 
 
@@ -229,14 +234,15 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 )
                 """
             )
+            cur.execute("DROP TABLE IF EXISTS best")
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS best (
-                    hero_id INTEGER PRIMARY KEY,
-                    hero_name TEXT,
-                    player_id BIGINT,
-                    matches INTEGER,
-                    wins INTEGER
+                CREATE TABLE IF NOT EXISTS hero_top100 (
+                    heroId INTEGER NOT NULL,
+                    steamAccountId BIGINT NOT NULL,
+                    matches INTEGER NOT NULL,
+                    wins INTEGER NOT NULL,
+                    PRIMARY KEY (heroId, steamAccountId)
                 )
                 """
             )
@@ -337,58 +343,9 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                     ON meta (key)
                 """
             )
-            cur.execute(
-                """
-                -- stratz_scraper.web.leaderboard.fetch_hero_leaderboard
-                DROP INDEX IF EXISTS public.idx_hero_stats_leaderboard
-                """
-            )
-            cur.execute(
-                """
-                -- stratz_scraper.web.leaderboard.fetch_overall_leaderboard
-                DROP INDEX IF EXISTS public.idx_hero_stats_order
-                """
-            )
-            cur.execute(
-                """
-                -- Materialized view backing hero leaderboards
-                CREATE MATERIALIZED VIEW IF NOT EXISTS public.hero_leaderboard AS
-                SELECT heroId, steamAccountId, matches, wins
-                FROM public.hero_stats
-                ORDER BY heroId, matches DESC, wins DESC, steamAccountId
-                WITH NO DATA
-                """
-            )
-            cur.execute(
-                """
-                -- Supports concurrent refreshes and ordered lookups
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_hero_leaderboard_pk
-                    ON public.hero_leaderboard (
-                        heroId,
-                        matches DESC,
-                        wins DESC,
-                        steamAccountId
-                    )
-                """
-            )
-            cur.execute(
-                """
-                -- Materialized view backing overall leaderboards
-                CREATE MATERIALIZED VIEW IF NOT EXISTS public.overall_leaderboard AS
-                SELECT steamAccountId, heroId, matches, wins
-                FROM public.hero_stats
-                ORDER BY matches DESC, wins DESC, steamAccountId
-                LIMIT 100
-                WITH NO DATA
-                """
-            )
-            cur.execute(
-                """
-                -- Provides stable ordering and supports concurrent refreshes
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_overall_leaderboard_pk
-                    ON public.overall_leaderboard (steamAccountId, heroId)
-                """
-            )
+            # ``hero_top100`` tops out at roughly 20k rows (100 players per hero)
+            # so dedicated indexes are unnecessary. Sequential scans remain cheap
+            # while keeping rebuilds simple.
     finally:
         if close_after:
             existing.commit()
@@ -396,28 +353,38 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
 
 
 def refresh_leaderboard_views(*, concurrently: bool = True) -> None:
-    """Refresh leaderboard materialized views."""
+    """Rebuild the cached hero leaderboard table."""
+
+    # ``concurrently`` is kept for API compatibility. The rebuild always runs in
+    # a single transaction so the flag is ignored.
+    del concurrently
 
     connection: Connection | None = None
     try:
-        connection = _create_connection(autocommit=True)
+        connection = _create_connection(autocommit=False)
         with connection.cursor() as cur:
-            for view in ("public.hero_leaderboard", "public.overall_leaderboard"):
-                try:
-                    clause = "CONCURRENTLY " if concurrently else ""
-                    retryable_execute(
-                        cur,
-                        f"REFRESH MATERIALIZED VIEW {clause}{view}",
-                    )
-                except errors.FeatureNotSupported as exc:
-                    if not concurrently or "CONCURRENTLY" not in str(exc):
-                        raise
-                    # The view has not been populated yet; populate it without
-                    # CONCURRENTLY so future refreshes can use it safely.
-                    retryable_execute(cur, f"REFRESH MATERIALIZED VIEW {view}")
-                except errors.UndefinedTable:
-                    # The materialized view has not been created yet; skip.
-                    continue
+            retryable_execute(cur, "DELETE FROM public.hero_top100")
+            retryable_execute(
+                cur,
+                """
+                INSERT INTO public.hero_top100 (heroId, steamAccountId, matches, wins)
+                SELECT heroId, steamAccountId, matches, wins
+                FROM (
+                    SELECT
+                        heroId,
+                        steamAccountId,
+                        matches,
+                        wins,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY heroId
+                            ORDER BY matches DESC, wins DESC, steamAccountId
+                        ) AS rn
+                    FROM public.hero_stats
+                ) ranked
+                WHERE ranked.rn <= 100
+                """,
+            )
+        connection.commit()
     finally:
         if connection is not None:
             try:

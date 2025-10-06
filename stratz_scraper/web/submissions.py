@@ -5,8 +5,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, List
 
-from ..database import db_connection, retryable_execute, retryable_executemany
-from ..heroes import HEROES
+from ..database import (
+    db_connection,
+    retryable_execute,
+    retryable_executemany,
+    row_value,
+)
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
@@ -64,14 +68,12 @@ def _unmark_discover_task(steam_account_id: int) -> None:
 
 def _extract_hero_rows(
     steam_account_id: int, heroes_payload: Iterable[dict] | None
-) -> tuple[
-    List[tuple[int, int, int, int]],
-    List[tuple[int, str, int, int, int]],
-]:
+) -> tuple[List[tuple[int, int, int, int]], List[int]]:
     hero_stats_rows: List[tuple[int, int, int, int]] = []
-    best_rows: List[tuple[int, str, int, int, int]] = []
+    hero_ids: List[int] = []
+    seen: set[int] = set()
     if heroes_payload is None:
-        return hero_stats_rows, best_rows
+        return hero_stats_rows, hero_ids
     for hero in heroes_payload:
         try:
             hero_id = int(hero["heroId"])
@@ -83,10 +85,10 @@ def _extract_hero_rows(
         except (KeyError, TypeError, ValueError):
             continue
         hero_stats_rows.append((steam_account_id, hero_id, matches, wins))
-        hero_name = HEROES.get(hero_id)
-        if hero_name:
-            best_rows.append((hero_id, hero_name, steam_account_id, matches, wins))
-    return hero_stats_rows, best_rows
+        if hero_id not in seen:
+            hero_ids.append(hero_id)
+            seen.add(hero_id)
+    return hero_stats_rows, hero_ids
 
 
 def _extract_discovered_counts(values: Iterable[object] | None) -> List[tuple[int, int]]:
@@ -165,7 +167,7 @@ def process_hero_submission(
     steam_account_id: int,
     heroes_payload: Iterable[dict] | None,
 ) -> None:
-    hero_stats_rows, best_rows = _extract_hero_rows(steam_account_id, heroes_payload)
+    hero_stats_rows, hero_ids = _extract_hero_rows(steam_account_id, heroes_payload)
     try:
         with db_connection(write=True) as conn:
             cur = conn.cursor()
@@ -189,20 +191,142 @@ def process_hero_submission(
                     """,
                     hero_stats_rows,
                 )
-            if best_rows:
-                retryable_executemany(
+            if hero_ids:
+                stats_rows = retryable_execute(
                     cur,
                     """
-                    INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
-                    VALUES (%s,%s,%s,%s,%s)
-                    ON CONFLICT(hero_id) DO UPDATE SET
-                        matches=excluded.matches,
-                        wins=excluded.wins,
-                        player_id=excluded.player_id
-                    WHERE excluded.matches > best.matches
+                    SELECT heroId, matches, wins
+                    FROM hero_stats
+                    WHERE steamAccountId=%s AND heroId = ANY(%s)
                     """,
-                    best_rows,
-                )
+                    (steam_account_id, list(hero_ids)),
+                ).fetchall()
+                stats_by_hero = {
+                    int(row_value(row, "heroId")): (
+                        int(row_value(row, "matches") or 0),
+                        int(row_value(row, "wins") or 0),
+                    )
+                    for row in stats_rows
+                }
+                if not stats_by_hero:
+                    return
+                hero_keys = list(stats_by_hero.keys())
+                existing_rows = retryable_execute(
+                    cur,
+                    """
+                    SELECT heroId, matches, wins
+                    FROM hero_top100
+                    WHERE steamAccountId=%s AND heroId = ANY(%s)
+                    """,
+                    (steam_account_id, hero_keys),
+                ).fetchall()
+                existing_by_hero = {
+                    int(row_value(row, "heroId")): (
+                        int(row_value(row, "matches") or 0),
+                        int(row_value(row, "wins") or 0),
+                    )
+                    for row in existing_rows
+                }
+                count_rows = retryable_execute(
+                    cur,
+                    """
+                    SELECT heroId, COUNT(*) AS total
+                    FROM hero_top100
+                    WHERE heroId = ANY(%s)
+                    GROUP BY heroId
+                    """,
+                    (hero_keys,),
+                ).fetchall()
+                counts_by_hero = {
+                    int(row_value(row, "heroId")): int(row_value(row, "total") or 0)
+                    for row in count_rows
+                }
+                threshold_rows = retryable_execute(
+                    cur,
+                    """
+                    SELECT heroId, steamAccountId, matches, wins
+                    FROM (
+                        SELECT
+                            heroId,
+                            steamAccountId,
+                            matches,
+                            wins,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY heroId
+                                ORDER BY matches DESC, wins DESC, steamAccountId ASC
+                            ) AS rn
+                        FROM hero_top100
+                        WHERE heroId = ANY(%s)
+                    ) ranked
+                    WHERE rn = 100
+                    """,
+                    (hero_keys,),
+                ).fetchall()
+                thresholds_by_hero = {
+                    int(row_value(row, "heroId")): (
+                        int(row_value(row, "steamAccountId")),
+                        int(row_value(row, "matches") or 0),
+                        int(row_value(row, "wins") or 0),
+                    )
+                    for row in threshold_rows
+                }
+                for hero_id, stats in stats_by_hero.items():
+                    matches, wins = stats
+                    existing_stats = existing_by_hero.get(hero_id)
+                    if existing_stats is not None:
+                        existing_matches, existing_wins = existing_stats
+                        if existing_matches != matches or existing_wins != wins:
+                            retryable_execute(
+                                cur,
+                                """
+                                UPDATE hero_top100
+                                SET matches=%s, wins=%s
+                                WHERE heroId=%s AND steamAccountId=%s
+                                """,
+                                (matches, wins, hero_id, steam_account_id),
+                            )
+                        continue
+                    hero_count = counts_by_hero.get(hero_id, 0)
+                    if hero_count < 100:
+                        retryable_execute(
+                            cur,
+                            """
+                            INSERT INTO hero_top100 (heroId, steamAccountId, matches, wins)
+                            VALUES (%s,%s,%s,%s)
+                            """,
+                            (hero_id, steam_account_id, matches, wins),
+                        )
+                        continue
+                    threshold_row = thresholds_by_hero.get(hero_id)
+                    if threshold_row is None:
+                        continue
+                    threshold_account, threshold_matches, threshold_wins = threshold_row
+                    if matches < threshold_matches:
+                        continue
+                    if matches == threshold_matches and wins <= threshold_wins:
+                        continue
+                    retryable_execute(
+                        cur,
+                        """
+                        INSERT INTO hero_top100 (heroId, steamAccountId, matches, wins)
+                        VALUES (%s,%s,%s,%s)
+                        """,
+                        (hero_id, steam_account_id, matches, wins),
+                    )
+                    retryable_execute(
+                        cur,
+                        """
+                        DELETE FROM hero_top100
+                        WHERE ctid = (
+                            SELECT ctid
+                            FROM hero_top100
+                            WHERE heroId=%s
+                            ORDER BY matches ASC, wins ASC, steamAccountId DESC
+                            LIMIT 1
+                        )
+                        """,
+                        (hero_id,),
+                    )
     except Exception:
         import traceback
 
