@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from pathlib import Path
 import os
-import sqlite3
 import threading
 import time
 from typing import Iterable, Sequence
@@ -14,7 +12,6 @@ from psycopg.rows import dict_row
 
 load_dotenv()
 
-DB_PATH = Path("dota.db")
 INITIAL_PLAYER_ID = 293053907
 
 def _build_database_url() -> str:
@@ -54,7 +51,6 @@ def ensure_schema_exists() -> None:
     with _create_connection(autocommit=False) as conn:
         ensure_schema(existing=conn)
         ensure_indexes(existing=conn)
-        maybe_convert_sqlite(existing=conn)
         conn.commit()
     _SCHEMA_INITIALIZED = True
 
@@ -394,137 +390,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             existing.close()
 
 
-def maybe_convert_sqlite(*, existing: Connection | None = None) -> None:
-    if not DB_PATH.exists():
-        return
-    close_after = False
-    if existing is None:
-        existing = connect_pg(autocommit=False)
-        close_after = True
-    with existing.cursor() as cur:
-        cur.execute("SELECT COUNT(*) AS count FROM players")
-        row = cur.fetchone()
-        if row and row["count"]:
-            return
-    with sqlite3.connect(DB_PATH) as legacy_conn:
-        legacy_conn.row_factory = sqlite3.Row
-        legacy_cur = legacy_conn.cursor()
-        with existing.cursor() as cur:
-            legacy_cur.execute("SELECT * FROM players")
-            player_rows = legacy_cur.fetchall()
-            if player_rows:
-                retryable_executemany(
-                    cur,
-                    """
-                    INSERT INTO players (
-                        steamAccountId,
-                        depth,
-                        assigned_to,
-                        assigned_at,
-                        hero_refreshed_at,
-                        hero_done,
-                        discover_done,
-                        seen_count
-                    )
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (steamAccountId) DO UPDATE SET
-                        depth=EXCLUDED.depth,
-                        assigned_to=EXCLUDED.assigned_to,
-                        assigned_at=EXCLUDED.assigned_at,
-                        hero_refreshed_at=EXCLUDED.hero_refreshed_at,
-                        hero_done=EXCLUDED.hero_done,
-                        discover_done=EXCLUDED.discover_done,
-                        seen_count=EXCLUDED.seen_count
-                    """,
-                    [
-                        (
-                            row["steamAccountId"],
-                            row["depth"],
-                            row["assigned_to"],
-                            row["assigned_at"],
-                            row["hero_refreshed_at"],
-                            bool(row["hero_done"]),
-                            bool(row["discover_done"]),
-                            row["seen_count"],
-                        )
-                        for row in player_rows
-                    ],
-                )
-            legacy_cur.execute("SELECT * FROM hero_stats")
-            hero_rows = legacy_cur.fetchall()
-            if hero_rows:
-                retryable_executemany(
-                    cur,
-                    """
-                    INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
-                    VALUES (%s,%s,%s,%s)
-                    ON CONFLICT (steamAccountId, heroId) DO UPDATE SET
-                        matches=EXCLUDED.matches,
-                        wins=EXCLUDED.wins
-                    """,
-                    [
-                        (
-                            row["steamAccountId"],
-                            row["heroId"],
-                            row["matches"],
-                            row["wins"],
-                        )
-                        for row in hero_rows
-                    ],
-                )
-            legacy_cur.execute("SELECT * FROM best")
-            best_rows = legacy_cur.fetchall()
-            if best_rows:
-                retryable_executemany(
-                    cur,
-                    """
-                    INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
-                    VALUES (%s,%s,%s,%s,%s)
-                    ON CONFLICT (hero_id) DO UPDATE SET
-                        hero_name=EXCLUDED.hero_name,
-                        player_id=EXCLUDED.player_id,
-                        matches=EXCLUDED.matches,
-                        wins=EXCLUDED.wins
-                    """,
-                    [
-                        (
-                            row["hero_id"],
-                            row["hero_name"],
-                            row["player_id"],
-                            row["matches"],
-                            row["wins"],
-                        )
-                        for row in best_rows
-                    ],
-                )
-            legacy_cur.execute("SELECT * FROM meta")
-            meta_rows = legacy_cur.fetchall()
-            if meta_rows:
-                retryable_executemany(
-                    cur,
-                    """
-                    INSERT INTO meta (key, value)
-                    VALUES (%s,%s)
-                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
-                    """,
-                    [
-                        (
-                            row["key"],
-                            row["value"],
-                        )
-                        for row in meta_rows
-                    ],
-                )
-    if close_after:
-        existing.commit()
-        existing.close()
-    backup_path = DB_PATH.with_suffix(".converted")
-    try:
-        DB_PATH.rename(backup_path)
-    except OSError:
-        pass
-
-
 def release_incomplete_assignments(
     max_age_minutes: int = 10,
     existing: Connection | None = None,
@@ -564,11 +429,9 @@ __all__ = [
     "ensure_schema_exists",
     "ensure_schema",
     "ensure_indexes",
-    "maybe_convert_sqlite",
     "release_incomplete_assignments",
     "retryable_execute",
     "retryable_executemany",
-    "DB_PATH",
     "INITIAL_PLAYER_ID",
     "DATABASE_URL",
 ]

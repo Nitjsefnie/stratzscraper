@@ -17,7 +17,7 @@ The Flask application serves both the single-page front-end and the JSON API use
 - `GET /best` and `/leaderboards`: Render aggregated leaderboards for all heroes or individual picks.
 
 ### Database Layer (`stratz_scraper/database.py`)
-The database module now targets PostgreSQL via `psycopg`. Connections are pooled per-thread for writers and opened on-demand for read-only operations. `ensure_schema_exists()` creates the schema when needed, makes sure all indexes exist, and automatically migrates data from an existing `dota.db` SQLite file into PostgreSQL the first time the server starts after the upgrade. The module exposes helpers for retrying statements that might be affected by transient locks, performing batched writes inside transactions, and releasing stale task assignments.
+The database module now targets PostgreSQL via `psycopg`. Connections are pooled per-thread for writers and opened on-demand for read-only operations. `ensure_schema_exists()` creates the schema when needed and makes sure all indexes exist. The module exposes helpers for retrying statements that might be affected by transient locks, performing batched writes inside transactions, and releasing stale task assignments.
 
 A default connection string of `postgresql://postgres:postgres@localhost:5432/stratz_scraper` is used when the `DATABASE_URL` environment variable is not provided.
 
@@ -25,7 +25,7 @@ A default connection string of `postgresql://postgres:postgres@localhost:5432/st
 Hero names remain bundled in `heroes.py`, providing a mapping that the backend uses to label leaderboard entries. Unknown hero IDs from Stratz are ignored to avoid polluting the tables.
 
 ## Task Flow
-1. **Startup**: The server ensures the PostgreSQL schema exists and seeds the initial Steam account. If a legacy `dota.db` file is present its contents are copied into PostgreSQL and the file is renamed with a `.converted` suffix.
+1. **Startup**: The server ensures the PostgreSQL schema exists and seeds the initial Steam account.
 2. **Hero Phase**: Workers repeatedly receive `fetch_hero_stats` tasks until every known account is marked complete. Each submission updates aggregated hero statistics and the per-hero leaderboard.
 3. **Discovery Phase**: Once hero coverage is complete, workers switch to `discover_matches` tasks. Newly discovered accounts are inserted at the next BFS depth with both phase flags reset, returning the system to the hero phase for those accounts.
 4. **Progress Monitoring**: The `/progress` endpoint exposes total players and per-phase completion counts so operators can see how far the crawl has progressed.

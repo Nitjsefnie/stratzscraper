@@ -174,7 +174,7 @@ def _assign_next_hero(cur) -> dict | None:
             SET assigned_to='hero',
                 assigned_at=CURRENT_TIMESTAMP
             WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-              AND hero_done=0
+              AND hero_done=FALSE
               AND assigned_to IS NULL
             RETURNING steamAccountId
             """,
