@@ -274,18 +274,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
-                -- stratz_scraper.web.assignment._assign_next_hero scans the hero queue by steamAccountId
-                CREATE INDEX IF NOT EXISTS idx_players_hero_assignment_cursor
-                    ON players (
-                        hero_done,
-                        assigned_to,
-                        steamAccountId
-                    )
-                    WHERE hero_done=FALSE AND assigned_to IS NULL
-                """
-            )
-            cur.execute(
-                """
                 -- stratz_scraper.web.assignment.assign_next_task
                 CREATE INDEX IF NOT EXISTS idx_players_hero_pending
                     ON players (steamAccountId)
@@ -298,20 +286,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                 CREATE INDEX IF NOT EXISTS idx_players_hero_unassigned_queue
                     ON players (steamAccountId)
                     WHERE hero_done=FALSE AND assigned_to IS NULL
-                """
-            )
-            cur.execute(
-                """
-                -- stratz_scraper.web.assignment.assign_next_task
-                CREATE INDEX IF NOT EXISTS idx_players_hero_refresh_seen
-                    ON players (
-                        hero_done,
-                        assigned_to,
-                        COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz),
-                        seen_count DESC,
-                        steamAccountId
-                    )
-                    WHERE hero_done=TRUE AND assigned_to IS NULL
                 """
             )
             cur.execute(
@@ -337,14 +311,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                 CREATE INDEX IF NOT EXISTS idx_players_hero_completed
                     ON players (steamAccountId)
                     WHERE hero_done=TRUE
-                """
-            )
-            cur.execute(
-                """
-                -- stratz_scraper.web.progress.fetch_progress
-                CREATE INDEX IF NOT EXISTS idx_players_discover_completed
-                    ON players (steamAccountId)
-                    WHERE discover_done=TRUE
                 """
             )
             cur.execute(
