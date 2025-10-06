@@ -772,14 +772,16 @@ function startToken(token) {
   });
 }
 
-function requestStopForToken(token, { silent = false } = {}) {
+function requestStopForToken(token, { silent = false, expand = true } = {}) {
   if (!token || !token.running || token.stopRequested) {
     return;
   }
   token.stopRequested = true;
-  token.expanded = true;
-  if (token.dom?.row) {
-    token.dom.row.open = true;
+  if (expand) {
+    token.expanded = true;
+    if (token.dom?.row) {
+      token.dom.row.open = true;
+    }
   }
   updateCollapseAllButton();
   updateTokenDisplay(token);
@@ -1687,7 +1689,7 @@ elements.stop.addEventListener("click", () => {
     return;
   }
   active.forEach((token) => {
-    requestStopForToken(token, { silent: true });
+    requestStopForToken(token, { silent: true, expand: false });
   });
   log("Stop requested for all active tokens.");
 });
