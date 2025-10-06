@@ -309,7 +309,7 @@ def _increment_assignment_counter(cur) -> int:
         """
         INSERT INTO meta (key, value)
         VALUES (%s, '1')
-        ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER) + 1
+        ON CONFLICT(key) DO UPDATE SET value=CAST(meta.value AS INTEGER) + 1
         RETURNING CAST(value AS INTEGER) AS value
         """,
         ("task_assignment_counter",),
