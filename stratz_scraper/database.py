@@ -31,6 +31,7 @@ DATABASE_URL = _build_database_url()
 
 _THREAD_LOCAL = threading.local()
 _SCHEMA_INITIALIZED = False
+_SCHEMA_ADVISORY_LOCK_ID = 0x73747261747A5343  # "stratzSC" in hex
 
 _RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     errors.DeadlockDetected,
@@ -64,9 +65,18 @@ def ensure_schema_exists() -> None:
     if _SCHEMA_INITIALIZED:
         return
     with _create_connection(autocommit=False) as conn:
-        ensure_schema(existing=conn)
-        ensure_indexes(existing=conn)
-        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (_SCHEMA_ADVISORY_LOCK_ID,),
+            )
+        try:
+            ensure_schema(existing=conn)
+            ensure_indexes(existing=conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     _SCHEMA_INITIALIZED = True
 
 
