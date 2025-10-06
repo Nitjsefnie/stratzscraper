@@ -9,15 +9,20 @@ __all__ = ["fetch_progress"]
 
 def fetch_progress() -> dict:
     with db_connection() as conn:
-        total = conn.execute("SELECT COUNT(*) AS c FROM players").fetchone()["c"]
-        hero_done = (
-            conn.execute("SELECT COUNT(*) AS c FROM players WHERE hero_done=TRUE").fetchone()["c"]
-        )
-        discover_done = (
-            conn.execute(
-                "SELECT COUNT(*) AS c FROM players WHERE discover_done=TRUE"
-            ).fetchone()["c"]
-        )
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE hero_done=TRUE) AS hero_done,
+                COUNT(*) FILTER (WHERE discover_done=TRUE) AS discover_done
+            FROM players
+            """
+        ).fetchone()
+        if row is None:
+            return {"players_total": 0, "hero_done": 0, "discover_done": 0}
+        total = row["total"] or 0
+        hero_done = row["hero_done"] or 0
+        discover_done = row["discover_done"] or 0
     return {
         "players_total": total,
         "hero_done": hero_done,
