@@ -218,21 +218,34 @@ def _assign_next_hero(cur) -> dict | None:
     return None
 
 
-def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
-    """Select the next task to hand to a worker."""
+def assign_next_task(
+    *,
+    run_cleanup: bool = False,
+    connection=None,
+) -> dict | None:
+    """Select the next task to hand to a worker.
+
+    When ``connection`` is provided the caller is responsible for committing or
+    rolling back the surrounding transaction. Otherwise a managed write
+    connection is opened for the duration of the scheduler work.
+    """
+
+    if connection is None:
+        with db_connection(write=True) as managed_conn:
+            return _assign_next_task_on_connection(
+                managed_conn,
+                run_cleanup=run_cleanup,
+            )
+    return _assign_next_task_on_connection(connection, run_cleanup=run_cleanup)
+
+
+def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | None:
     task_payload: dict | None = None
 
-    with db_connection(write=True) as conn:
-        if run_cleanup:
-            maybe_run_assignment_cleanup(conn)
+    if run_cleanup:
+        maybe_run_assignment_cleanup(connection)
 
-        retryable_execute(
-            conn,
-            "BEGIN",
-            retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-        )
-        cur = conn.cursor()
-
+    with connection.cursor() as cur:
         counter_row = cur.execute(
             "SELECT value FROM meta WHERE key=%s",
             ("task_assignment_counter",),
@@ -245,76 +258,70 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
         loop_count = current_count
         task_payload = None
 
-        try:
-            while True:
-                next_count = loop_count + 1
-                refresh_due = next_count % 10 == 0
-                discovery_due = next_count % 10000 == 0
+        while True:
+            next_count = loop_count + 1
+            refresh_due = next_count % 10 == 0
+            discovery_due = next_count % 10000 == 0
 
-                candidate_payload = None
+            candidate_payload = None
 
-                if discovery_due:
+            if discovery_due:
+                candidate_payload = _assign_discovery(cur)
+                if candidate_payload is None and _restart_discovery_cycle(cur):
                     candidate_payload = _assign_discovery(cur)
-                    if candidate_payload is None and _restart_discovery_cycle(cur):
-                        candidate_payload = _assign_discovery(cur)
 
-                if candidate_payload is None and refresh_due:
-                    assigned_row = retryable_execute(
-                        cur,
-                        """
-                        WITH candidate AS (
-                            SELECT steamAccountId
-                            FROM players
-                            WHERE hero_done=TRUE
-                              AND assigned_to IS NULL
-                            ORDER BY COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz) ASC,
-                                     seen_count DESC,
-                                     steamAccountId ASC
-                            LIMIT 1
-                        )
-                        UPDATE players
-                        SET hero_done=FALSE,
-                            assigned_to='hero',
-                            assigned_at=CURRENT_TIMESTAMP
-                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                          AND hero_done=TRUE
+            if candidate_payload is None and refresh_due:
+                assigned_row = retryable_execute(
+                    cur,
+                    """
+                    WITH candidate AS (
+                        SELECT steamAccountId
+                        FROM players
+                        WHERE hero_done=TRUE
                           AND assigned_to IS NULL
-                        RETURNING steamAccountId
-                        """,
-                        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-                    ).fetchone()
-                    if assigned_row:
-                        candidate_payload = {
-                            "type": "fetch_hero_stats",
-                            "steamAccountId": int(
-                                row_value(assigned_row, "steamAccountId")
-                            ),
-                        }
+                        ORDER BY COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz) ASC,
+                                 seen_count DESC,
+                                 steamAccountId ASC
+                        LIMIT 1
+                    )
+                    UPDATE players
+                    SET hero_done=FALSE,
+                        assigned_to='hero',
+                        assigned_at=CURRENT_TIMESTAMP
+                    WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                      AND hero_done=TRUE
+                      AND assigned_to IS NULL
+                    RETURNING steamAccountId
+                    """,
+                    retry_interval=ASSIGNMENT_RETRY_INTERVAL,
+                ).fetchone()
+                if assigned_row:
+                    candidate_payload = {
+                        "type": "fetch_hero_stats",
+                        "steamAccountId": int(
+                            row_value(assigned_row, "steamAccountId")
+                        ),
+                    }
 
-                if candidate_payload is None:
-                    candidate_payload = _assign_next_hero(cur)
+            if candidate_payload is None:
+                candidate_payload = _assign_next_hero(cur)
 
-                if candidate_payload is None:
-                    hero_pending = cur.execute(
-                        "SELECT 1 FROM players WHERE hero_done=FALSE LIMIT 1"
-                    ).fetchone()
-                    if not hero_pending and not discovery_due:
-                        candidate_payload = _assign_discovery(cur)
+            if candidate_payload is None:
+                hero_pending = cur.execute(
+                    "SELECT 1 FROM players WHERE hero_done=FALSE LIMIT 1"
+                ).fetchone()
+                if not hero_pending and not discovery_due:
+                    candidate_payload = _assign_discovery(cur)
 
-                if candidate_payload is not None:
-                    _increment_assignment_counter(cur)
-                    task_payload = candidate_payload
-                    break
+            if candidate_payload is not None:
+                _increment_assignment_counter(cur)
+                task_payload = candidate_payload
+                break
 
-                if refresh_due or discovery_due:
-                    break
+            if refresh_due or discovery_due:
+                break
 
-                loop_count = next_count
-        except Exception:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
+            loop_count = next_count
 
     return task_payload
 

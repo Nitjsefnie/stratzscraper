@@ -80,6 +80,7 @@ def create_app() -> Flask:
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
             heroes_payload = data.get("heroes", [])
+            next_task = None
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
                 retryable_execute(
@@ -100,7 +101,8 @@ def create_app() -> Flask:
                         jsonify({"status": "error", "message": "Player not found"}),
                         404,
                     )
-            next_task = assign_next_task() if request_new_task else None
+                if request_new_task:
+                    next_task = assign_next_task(connection=conn)
             submit_hero_submission(
                 steam_account_id,
                 heroes_payload,
@@ -130,6 +132,7 @@ def create_app() -> Flask:
                     provided_depth = None
             discovered_payload = data.get("discovered", [])
             assignment_depth = None
+            next_task = None
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
                 update_row = retryable_execute(
@@ -151,7 +154,8 @@ def create_app() -> Flask:
                         404,
                     )
                 assignment_depth = update_row["depth"] if update_row is not None else None
-            next_task = assign_next_task() if request_new_task else None
+                if request_new_task:
+                    next_task = assign_next_task(connection=conn)
             submit_discover_submission(
                 steam_account_id,
                 discovered_payload,
