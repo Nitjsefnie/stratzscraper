@@ -11,7 +11,11 @@ from ..database import (
     retryable_execute,
     release_incomplete_assignments,
 )
-from .assignment import assign_next_task, ensure_assignment_cleanup_scheduler
+from .assignment import (
+    ASSIGNMENT_RETRY_INTERVAL,
+    assign_next_task,
+    ensure_assignment_cleanup_scheduler,
+)
 from .config import STATIC_DIR, TEMPLATE_DIR
 from .leaderboard import (
     fetch_best_payload,
@@ -89,6 +93,7 @@ def create_app() -> Flask:
                     WHERE steamAccountId=%s
                     """,
                     (steam_account_id,),
+                    retry_interval=ASSIGNMENT_RETRY_INTERVAL,
                 )
                 if cur.rowcount == 0:
                     return (
@@ -138,6 +143,7 @@ def create_app() -> Flask:
                     RETURNING depth
                     """,
                     (steam_account_id,),
+                    retry_interval=ASSIGNMENT_RETRY_INTERVAL,
                 ).fetchone()
                 if update_row is None:
                     return (
