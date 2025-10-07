@@ -282,7 +282,7 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                         FROM players
                         WHERE hero_done=TRUE
                           AND assigned_to IS NULL
-                        ORDER BY COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz) ASC,
+                        ORDER BY hero_refreshed_at ASC NULLS FIRST,
                                  seen_count DESC,
                                  steamAccountId ASC
                         LIMIT 1
