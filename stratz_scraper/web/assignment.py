@@ -110,6 +110,7 @@ def _assign_discovery(cur) -> dict | None:
                      COALESCE(depth, 0) ASC,
                      steamAccountId ASC
             LIMIT 1
+            FOR UPDATE SKIP LOCKED
         )
         UPDATE players
         SET assigned_to='discover',
@@ -170,6 +171,7 @@ def _assign_next_hero(cur) -> dict | None:
                   AND steamAccountId > %s
                 ORDER BY steamAccountId ASC
                 LIMIT 1
+                FOR UPDATE SKIP LOCKED
             ),
             fallback AS (
                 SELECT steamAccountId
@@ -179,6 +181,7 @@ def _assign_next_hero(cur) -> dict | None:
                   AND steamAccountId > 0
                 ORDER BY steamAccountId ASC
                 LIMIT 1
+                FOR UPDATE SKIP LOCKED
             ),
             selected AS (
                 SELECT steamAccountId FROM candidate
@@ -274,7 +277,7 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                 assigned_row = retryable_execute(
                     cur,
                     """
-                    WITH candidate AS (
+            WITH candidate AS (
                         SELECT steamAccountId
                         FROM players
                         WHERE hero_done=TRUE
@@ -283,6 +286,7 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                                  seen_count DESC,
                                  steamAccountId ASC
                         LIMIT 1
+                        FOR UPDATE SKIP LOCKED
                     )
                     UPDATE players
                     SET hero_done=FALSE,
