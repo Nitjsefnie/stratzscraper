@@ -20,8 +20,16 @@ def _reset_hero_task(cur, steam_account_id: int) -> int:
         cur,
         """
         UPDATE players
-        SET hero_done=%s,
-            hero_refreshed_at=CASE WHEN %s THEN hero_refreshed_at ELSE NULL END,
+        SET hero_done=CASE
+                WHEN hero_done THEN TRUE
+                WHEN %s THEN TRUE
+                ELSE FALSE
+            END,
+            hero_refreshed_at=CASE
+                WHEN hero_done THEN hero_refreshed_at
+                WHEN %s THEN hero_refreshed_at
+                ELSE NULL
+            END,
             assigned_to=NULL,
             assigned_at=NULL
         WHERE steamAccountId=%s
