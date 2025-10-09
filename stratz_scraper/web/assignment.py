@@ -312,7 +312,13 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
 
             if candidate_payload is None:
                 hero_pending = cur.execute(
-                    "SELECT 1 FROM players WHERE hero_done=FALSE LIMIT 1"
+                    """
+                    SELECT 1
+                    FROM players
+                    WHERE hero_done=FALSE
+                      AND assigned_to IS NULL
+                    LIMIT 1
+                    """
                 ).fetchone()
                 if not hero_pending and not discovery_due:
                     candidate_payload = _assign_discovery(cur)

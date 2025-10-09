@@ -286,15 +286,12 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
-                -- stratz_scraper.web.assignment.assign_next_task
-                CREATE INDEX IF NOT EXISTS idx_players_hero_pending
-                    ON players (steamAccountId)
-                    WHERE hero_done=FALSE
+                DROP INDEX IF EXISTS idx_players_hero_pending
                 """
             )
             cur.execute(
                 """
-                -- stratz_scraper.web.assignment._assign_next_hero fetches the next unassigned hero
+                -- stratz_scraper.web.assignment hero assignment lookups
                 CREATE INDEX IF NOT EXISTS idx_players_hero_unassigned_queue
                     ON players (steamAccountId)
                     WHERE hero_done=FALSE AND assigned_to IS NULL
