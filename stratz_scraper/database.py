@@ -172,7 +172,8 @@ def retryable_execute(
     while True:
         try:
             return target.execute(sql, parameters)
-        except _RETRYABLE_ERRORS:
+        except _RETRYABLE_ERRORS as e:
+            print(e)
             time.sleep(retry_interval)
             continue
         except Error:
@@ -195,7 +196,7 @@ def retryable_executemany(
                 cursor = target if isinstance(target, Cursor) else connection.cursor()
                 result = cursor.executemany(sql, seq_of_parameters)
             return result
-        except _RETRYABLE_ERRORS:
+        except _RETRYABLE_ERRORS as e:
             time.sleep(retry_interval)
             continue
         except Error:

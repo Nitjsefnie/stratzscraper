@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from multiprocessing import Lock
 from typing import Iterable, List
 
 from ..database import (
