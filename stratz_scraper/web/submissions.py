@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from typing import Iterable, List
 
 from ..database import (
@@ -13,6 +14,7 @@ from ..database import (
 )
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=4)
+_DISCOVERY_SUBMISSION_LOCK = Lock()
 
 __all__ = [
     "BACKGROUND_EXECUTOR",
@@ -355,43 +357,44 @@ def process_discover_submission(
         parsed_assignment_depth,
     )
     try:
-        with db_connection(write=True) as conn:
-            cur = conn.cursor()
-            child_rows = [
-                (new_id, next_depth_value, max(count, 0))
-                for new_id, count in discovered_counts
-                if new_id != steam_account_id and count > 0
-            ]
-            if child_rows:
-                retryable_executemany(
+        with _DISCOVERY_SUBMISSION_LOCK:
+            with db_connection(write=True) as conn:
+                cur = conn.cursor()
+                child_rows = [
+                    (new_id, next_depth_value, max(count, 0))
+                    for new_id, count in discovered_counts
+                    if new_id != steam_account_id and count > 0
+                ]
+                if child_rows:
+                    retryable_executemany(
+                        cur,
+                        """
+                        INSERT INTO players (
+                            steamAccountId,
+                            depth,
+                            hero_done,
+                            discover_done,
+                            seen_count
+                        )
+                        VALUES (%s,%s,FALSE,FALSE,%s)
+                        ON CONFLICT(steamAccountId) DO UPDATE SET
+                            depth=CASE
+                                WHEN players.depth IS NULL THEN excluded.depth
+                                WHEN excluded.depth < players.depth THEN excluded.depth
+                                ELSE players.depth
+                            END,
+                            seen_count=players.seen_count + excluded.seen_count
+                        """,
+                        child_rows,
+                    )
+                retryable_execute(
                     cur,
                     """
-                    INSERT INTO players (
-                        steamAccountId,
-                        depth,
-                        hero_done,
-                        discover_done,
-                        seen_count
-                    )
-                    VALUES (%s,%s,FALSE,FALSE,%s)
-                    ON CONFLICT(steamAccountId) DO UPDATE SET
-                        depth=CASE
-                            WHEN players.depth IS NULL THEN excluded.depth
-                            WHEN excluded.depth < players.depth THEN excluded.depth
-                            ELSE players.depth
-                        END,
-                        seen_count=players.seen_count + excluded.seen_count
-                    """,
-                    child_rows,
+                    UPDATE meta
+                    SET value = '-1'
+                    WHERE key = 'hero_assignment_cursor';
+                    """
                 )
-            retryable_execute(
-                cur,
-                """
-                UPDATE meta
-                SET value = '-1'
-                WHERE key = 'hero_assignment_cursor';
-                """
-            )
     except Exception:
         import traceback
 
