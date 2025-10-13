@@ -84,6 +84,9 @@
       };
 
       const ctx = document.getElementById('progressChart');
+      const baseLegendLabelGenerator =
+        Chart.defaults.plugins.legend.labels.generateLabels;
+
       const chart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -122,6 +125,22 @@
           plugins: {
             legend: {
               position: 'bottom',
+              labels: {
+                generateLabels(chartInstance) {
+                  const labels = baseLegendLabelGenerator(chartInstance);
+                  return labels.map((label) => {
+                    const dataset =
+                      chartInstance.data.datasets?.[label.datasetIndex];
+                    if (dataset?.label) {
+                      return {
+                        ...label,
+                        text: dataset.label,
+                      };
+                    }
+                    return label;
+                  });
+                },
+              },
             },
             tooltip: {
               callbacks: {
