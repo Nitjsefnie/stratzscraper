@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Mapping
 
 from ..database import db_connection, retryable_execute
 
 __all__ = [
+    "ensure_progress_snapshotter",
     "fetch_progress",
     "list_progress_snapshots",
     "record_progress_snapshot",
 ]
+
+
+_LOGGER = logging.getLogger(__name__)
+
+_SNAPSHOT_THREAD: threading.Thread | None = None
+_SNAPSHOT_STOP_EVENT: threading.Event | None = None
+_SNAPSHOT_LOCK = threading.Lock()
+_SNAPSHOT_INTERVAL = timedelta(hours=1)
 
 
 def fetch_progress() -> dict:
@@ -106,6 +117,47 @@ def record_progress_snapshot(
         **normalized,
     }
     return snapshot
+
+
+def _seconds_until_next_hour(reference: datetime) -> float:
+    normalized = reference.replace(minute=0, second=0, microsecond=0)
+    next_tick = normalized + _SNAPSHOT_INTERVAL
+    wait_seconds = (next_tick - reference).total_seconds()
+    if wait_seconds <= 0:
+        return 1.0
+    return wait_seconds
+
+
+def _progress_snapshot_worker(stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            record_progress_snapshot()
+        except Exception:  # pragma: no cover - best effort logging
+            _LOGGER.exception("Progress snapshot worker failed")
+        now = datetime.now(timezone.utc)
+        if stop_event.wait(_seconds_until_next_hour(now)):
+            break
+
+
+def ensure_progress_snapshotter() -> None:
+    """Start the background worker that records hourly progress snapshots."""
+
+    global _SNAPSHOT_THREAD, _SNAPSHOT_STOP_EVENT
+    with _SNAPSHOT_LOCK:
+        if _SNAPSHOT_THREAD and _SNAPSHOT_THREAD.is_alive():
+            return
+        if _SNAPSHOT_STOP_EVENT is not None:
+            _SNAPSHOT_STOP_EVENT.set()
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=_progress_snapshot_worker,
+            args=(stop_event,),
+            name="progress-snapshotter",
+            daemon=True,
+        )
+        thread.start()
+        _SNAPSHOT_THREAD = thread
+        _SNAPSHOT_STOP_EVENT = stop_event
 
 
 def list_progress_snapshots(*, limit: int | None = None) -> list[dict]:

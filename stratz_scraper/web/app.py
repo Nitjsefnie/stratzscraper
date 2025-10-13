@@ -22,7 +22,7 @@ from .leaderboard import (
     fetch_hero_leaderboard,
     fetch_overall_leaderboard,
 )
-from .progress import fetch_progress
+from .progress import ensure_progress_snapshotter, fetch_progress
 from .request_utils import is_local_request
 from .seed import seed_players
 from .submissions import submit_discover_submission, submit_hero_submission
@@ -40,6 +40,7 @@ def create_app() -> Flask:
 
     release_incomplete_assignments()
     ensure_assignment_cleanup_scheduler()
+    ensure_progress_snapshotter()
 
     @app.teardown_appcontext
     def _teardown_connections(exception: object | None) -> None:
