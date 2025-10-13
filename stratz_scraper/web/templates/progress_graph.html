@@ -60,16 +60,33 @@
     <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
     <script>
       const snapshots = {{ snapshots|tojson }};
-      const labels = snapshots.map((entry) => new Date(entry.captured_at).toLocaleString());
-      const heroDone = snapshots.map((entry) => entry.hero_done);
-      const discoverDone = snapshots.map((entry) => entry.discover_done);
-      const playersTotal = snapshots.map((entry) => entry.players_total);
+
+      const timeSeries = snapshots
+        .map((entry) => ({
+          x: new Date(entry.captured_at).getTime(),
+          heroDone: entry.hero_done,
+          discoverDone: entry.discover_done,
+          playersTotal: entry.players_total,
+        }))
+        .filter((entry) => Number.isFinite(entry.x))
+        .sort((a, b) => a.x - b.x);
+
+      const heroDone = timeSeries.map((entry) => ({ x: entry.x, y: entry.heroDone }));
+      const discoverDone = timeSeries.map((entry) => ({ x: entry.x, y: entry.discoverDone }));
+      const playersTotal = timeSeries.map((entry) => ({ x: entry.x, y: entry.playersTotal }));
+
+      const formatDateTime = (timestamp) => {
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) {
+          return '';
+        }
+        return date.toLocaleString();
+      };
 
       const ctx = document.getElementById('progressChart');
       const chart = new Chart(ctx, {
         type: 'line',
         data: {
-          labels,
           datasets: [
             {
               label: 'Hero Done',
@@ -109,8 +126,8 @@
             tooltip: {
               callbacks: {
                 title(tooltipItems) {
-                  const rawDate = snapshots[tooltipItems[0].dataIndex].captured_at;
-                  const date = new Date(rawDate);
+                  const timestamp = tooltipItems[0].parsed.x;
+                  const date = new Date(timestamp);
                   return date.toUTCString();
                 },
               },
@@ -118,9 +135,17 @@
           },
           scales: {
             x: {
+              type: 'linear',
               title: {
                 display: true,
                 text: 'Captured At (local time)',
+              },
+              ticks: {
+                callback(value) {
+                  return formatDateTime(value);
+                },
+                maxRotation: 0,
+                autoSkip: true,
               },
             },
             y: {
