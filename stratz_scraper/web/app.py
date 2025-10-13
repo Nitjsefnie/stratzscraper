@@ -22,7 +22,11 @@ from .leaderboard import (
     fetch_hero_leaderboard,
     fetch_overall_leaderboard,
 )
-from .progress import ensure_progress_snapshotter, fetch_progress
+from .progress import (
+    ensure_progress_snapshotter,
+    fetch_progress,
+    list_progress_snapshots,
+)
 from .request_utils import is_local_request
 from .seed import seed_players
 from .submissions import submit_discover_submission, submit_hero_submission
@@ -173,6 +177,11 @@ def create_app() -> Flask:
     @app.get("/progress")
     def progress():
         return jsonify(fetch_progress())
+
+    @app.get("/progress/graph")
+    def progress_graph() -> str:
+        snapshots = list_progress_snapshots()
+        return render_template("progress_graph.html", snapshots=snapshots)
 
     @app.get("/seed")
     def seed():

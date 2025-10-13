@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Progress Graph</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <style>
+      .graph-container {
+        max-width: 960px;
+        margin: 2rem auto;
+        padding: 1.5rem;
+      }
+      .graph-card {
+        background: white;
+        border-radius: 0.75rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        padding: 1.5rem;
+      }
+      .graph-header {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+      }
+      .graph-actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .graph-actions a {
+        text-decoration: none;
+      }
+      .graph-empty {
+        color: #5f6368;
+        margin: 1rem 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="graph-container">
+      <div class="graph-card">
+        <div class="graph-header">
+          <h1>Progress Over Time</h1>
+          <div class="graph-actions">
+            <a class="secondary" href="{{ url_for('index') }}">⬅ Back to dashboard</a>
+            <a class="secondary" href="{{ url_for('leaderboards') }}">View leaderboard</a>
+          </div>
+          <p class="muted">Hourly snapshots captured by the background worker.</p>
+        </div>
+        {% if snapshots %}
+        <canvas id="progressChart" style="max-height: 480px;"></canvas>
+        {% else %}
+        <p class="graph-empty">No progress snapshots have been recorded yet.</p>
+        {% endif %}
+      </div>
+    </main>
+    {% if snapshots %}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-z9C5nR03QExzFhTL80Br9z9++/X7GsmAaNGtjNdX3de5YwRdSsITUCIBYHd8Ilse" crossorigin="anonymous"></script>
+    <script>
+      const snapshots = {{ snapshots|tojson }};
+      const labels = snapshots.map((entry) => new Date(entry.captured_at).toLocaleString());
+      const heroDone = snapshots.map((entry) => entry.hero_done);
+      const discoverDone = snapshots.map((entry) => entry.discover_done);
+      const playersTotal = snapshots.map((entry) => entry.players_total);
+
+      const ctx = document.getElementById('progressChart');
+      const chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Hero Done',
+              data: heroDone,
+              borderColor: 'rgba(75, 192, 192, 1)',
+              backgroundColor: 'rgba(75, 192, 192, 0.1)',
+              tension: 0.2,
+            },
+            {
+              label: 'Discover Done',
+              data: discoverDone,
+              borderColor: 'rgba(255, 99, 132, 1)',
+              backgroundColor: 'rgba(255, 99, 132, 0.1)',
+              tension: 0.2,
+            },
+            {
+              label: 'Players Total',
+              data: playersTotal,
+              borderColor: 'rgba(54, 162, 235, 1)',
+              backgroundColor: 'rgba(54, 162, 235, 0.1)',
+              tension: 0.2,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false,
+          },
+          stacked: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+            },
+            tooltip: {
+              callbacks: {
+                title(tooltipItems) {
+                  const rawDate = snapshots[tooltipItems[0].dataIndex].captured_at;
+                  const date = new Date(rawDate);
+                  return date.toUTCString();
+                },
+              },
+            },
+          },
+          scales: {
+            x: {
+              title: {
+                display: true,
+                text: 'Captured At (local time)',
+              },
+            },
+            y: {
+              title: {
+                display: true,
+                text: 'Count',
+              },
+              beginAtZero: true,
+            },
+          },
+        },
+      });
+    </script>
+    {% endif %}
+  </body>
+</html>
