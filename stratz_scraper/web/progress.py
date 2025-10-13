@@ -22,7 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 _SNAPSHOT_THREAD: threading.Thread | None = None
 _SNAPSHOT_STOP_EVENT: threading.Event | None = None
 _SNAPSHOT_LOCK = threading.Lock()
-_SNAPSHOT_INTERVAL = timedelta(hours=1)
+_SNAPSHOT_INTERVAL = timedelta(minutes=5)
 
 
 def fetch_progress() -> dict:
@@ -53,7 +53,9 @@ def _normalize_captured_at(captured_at: datetime | None) -> datetime:
         captured_at = datetime.now(timezone.utc)
     elif captured_at.tzinfo is None:
         captured_at = captured_at.replace(tzinfo=timezone.utc)
-    return captured_at.replace(minute=0, second=0, microsecond=0)
+    interval_seconds = int(_SNAPSHOT_INTERVAL.total_seconds())
+    normalized_timestamp = (int(captured_at.timestamp()) // interval_seconds) * interval_seconds
+    return datetime.fromtimestamp(normalized_timestamp, tz=timezone.utc)
 
 
 def record_progress_snapshot(
@@ -71,8 +73,8 @@ def record_progress_snapshot(
         live ``/progress`` view.
     captured_at:
         Optional timestamp indicating when the snapshot was captured. The value
-        is normalized to the start of the hour in UTC to keep a single row per
-        hour.
+        is normalized to the start of the five-minute interval in UTC to keep a
+        single row per interval.
     """
 
     captured_at = _normalize_captured_at(captured_at)
@@ -119,8 +121,8 @@ def record_progress_snapshot(
     return snapshot
 
 
-def _seconds_until_next_hour(reference: datetime) -> float:
-    normalized = reference.replace(minute=0, second=0, microsecond=0)
+def _seconds_until_next_interval(reference: datetime) -> float:
+    normalized = _normalize_captured_at(reference)
     next_tick = normalized + _SNAPSHOT_INTERVAL
     wait_seconds = (next_tick - reference).total_seconds()
     if wait_seconds <= 0:
@@ -135,12 +137,12 @@ def _progress_snapshot_worker(stop_event: threading.Event) -> None:
         except Exception:  # pragma: no cover - best effort logging
             _LOGGER.exception("Progress snapshot worker failed")
         now = datetime.now(timezone.utc)
-        if stop_event.wait(_seconds_until_next_hour(now)):
+        if stop_event.wait(_seconds_until_next_interval(now)):
             break
 
 
 def ensure_progress_snapshotter() -> None:
-    """Start the background worker that records hourly progress snapshots."""
+    """Start the background worker that records five-minute progress snapshots."""
 
     global _SNAPSHOT_THREAD, _SNAPSHOT_STOP_EVENT
     with _SNAPSHOT_LOCK:
@@ -160,8 +162,8 @@ def ensure_progress_snapshotter() -> None:
         _SNAPSHOT_STOP_EVENT = stop_event
 
 
-def list_progress_snapshots(*, limit: int | None = None) -> list[dict]:
-    """Return stored progress snapshots ordered chronologically."""
+def list_progress_snapshots() -> list[dict]:
+    """Return the full history of stored progress snapshots ordered chronologically."""
 
     sql = (
         """
@@ -170,15 +172,9 @@ def list_progress_snapshots(*, limit: int | None = None) -> list[dict]:
         ORDER BY captured_at ASC
         """
     )
-    parameters = ()
-    if limit is not None:
-        if limit <= 0:
-            return []
-        sql += " LIMIT %s"
-        parameters = (limit,)
 
     with db_connection() as conn:
-        rows = conn.execute(sql, parameters).fetchall()
+        rows = conn.execute(sql).fetchall()
 
     return [
         {

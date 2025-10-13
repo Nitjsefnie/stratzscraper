@@ -47,7 +47,7 @@
             <a class="secondary" href="{{ url_for('index') }}">⬅ Back to dashboard</a>
             <a class="secondary" href="{{ url_for('leaderboards') }}">View leaderboard</a>
           </div>
-          <p class="muted">Hourly snapshots captured by the background worker.</p>
+          <p class="muted">Snapshots captured every five minutes by the background worker.</p>
         </div>
         {% if snapshots %}
         <canvas id="progressChart" style="max-height: 480px;"></canvas>
