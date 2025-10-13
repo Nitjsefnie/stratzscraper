@@ -56,7 +56,11 @@
       </div>
     </main>
     {% if snapshots %}
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-z9C5nR03QExzFhTL80Br9z9++/X7GsmAaNGtjNdX3de5YwRdSsITUCIBYHd8Ilse" crossorigin="anonymous"></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
+      integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt"
+      crossorigin="anonymous"
+    ></script>
     <script>
       const snapshots = {{ snapshots|tojson }};
       const labels = snapshots.map((entry) => new Date(entry.captured_at).toLocaleString());
