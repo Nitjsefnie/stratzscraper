@@ -257,6 +257,16 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS progress_snapshots (
+                    captured_at TIMESTAMPTZ PRIMARY KEY,
+                    players_total BIGINT NOT NULL,
+                    hero_done BIGINT NOT NULL,
+                    discover_done BIGINT NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
                 INSERT INTO players (steamAccountId, depth)
                 VALUES (%s, 0)
                 ON CONFLICT (steamAccountId) DO NOTHING
