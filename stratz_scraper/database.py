@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence as SequenceCollection
 from contextlib import contextmanager
 import os
 import threading
@@ -180,12 +180,42 @@ def retryable_execute(
             raise
 
 
+def _reacquire_advisory_lock(
+    connection: Connection,
+    target: Connection | Cursor,
+    lock_key: Sequence | object,
+) -> None:
+    if isinstance(lock_key, SequenceCollection) and not isinstance(
+        lock_key, (bytes, bytearray, str)
+    ):
+        parameters = tuple(lock_key)
+    else:
+        parameters = (lock_key,)
+    placeholders = ", ".join(["%s"] * len(parameters))
+    cursor: Cursor
+    close_cursor = False
+    if isinstance(target, Cursor):
+        cursor = target
+    else:
+        cursor = connection.cursor()
+        close_cursor = True
+    try:
+        cursor.execute(
+            f"SELECT pg_advisory_xact_lock({placeholders})",
+            parameters,
+        )
+    finally:
+        if close_cursor:
+            cursor.close()
+
+
 def retryable_executemany(
     target: Connection | Cursor,
     sql: str,
     seq_of_parameters: Iterable[Sequence],
     *,
     retry_interval: float = 0.5,
+    reacquire_advisory_lock: Sequence | object | None = None,
 ):
     if not isinstance(seq_of_parameters, (list, tuple)):
         seq_of_parameters = list(seq_of_parameters)
@@ -210,6 +240,12 @@ def retryable_executemany(
                 connection.rollback()
             except Error:
                 pass
+            if reacquire_advisory_lock is not None:
+                _reacquire_advisory_lock(
+                    connection,
+                    target,
+                    reacquire_advisory_lock,
+                )
             time.sleep(retry_interval)
             continue
         except Error:

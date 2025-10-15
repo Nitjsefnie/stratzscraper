@@ -394,6 +394,7 @@ def process_discover_submission(
                         END
                     """,
                     child_rows,
+                    reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
                 )
             retryable_execute(
                 cur,
