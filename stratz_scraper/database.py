@@ -192,14 +192,31 @@ def retryable_executemany(
     connection = target if isinstance(target, Connection) else target.connection
     while True:
         try:
-            with connection.transaction():
-                cursor = target if isinstance(target, Cursor) else connection.cursor()
+            cursor: Cursor
+            close_cursor = False
+            if isinstance(target, Cursor):
+                cursor = target
+            else:
+                cursor = connection.cursor()
+                close_cursor = True
+            try:
                 result = cursor.executemany(sql, seq_of_parameters)
+            finally:
+                if close_cursor:
+                    cursor.close()
             return result
         except _RETRYABLE_ERRORS as e:
+            try:
+                connection.rollback()
+            except Error:
+                pass
             time.sleep(retry_interval)
             continue
         except Error:
+            try:
+                connection.rollback()
+            except Error:
+                pass
             raise
 
 
