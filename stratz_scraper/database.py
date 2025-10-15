@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from psycopg import Connection, Cursor, Error, connect, errors
 from psycopg.rows import dict_row
 
+from flask import has_app_context
+
 load_dotenv()
 
 INITIAL_PLAYER_ID = 293053907
@@ -100,26 +102,36 @@ def connect_pg(*, autocommit: bool = True) -> Connection:
 def db_connection(*, write: bool = False) -> Iterable[Connection]:
     ensure_schema_exists()
     connection: Connection | None = None
+    cached_connection = False
     if write:
-        cache = getattr(_THREAD_LOCAL, "connections", None)
-        if cache is None:
-            cache = {}
-            _THREAD_LOCAL.connections = cache
-        connection = cache.get("write")
-        if connection is not None:
-            try:
-                with connection.cursor() as cur:
-                    cur.execute("SELECT 1")
-            except Error:
+        use_cache = False
+        try:
+            use_cache = has_app_context()
+        except RuntimeError:
+            use_cache = False
+        if use_cache:
+            cache = getattr(_THREAD_LOCAL, "connections", None)
+            if cache is None:
+                cache = {}
+                _THREAD_LOCAL.connections = cache
+            connection = cache.get("write")
+            if connection is not None:
                 try:
-                    connection.close()
+                    with connection.cursor() as cur:
+                        cur.execute("SELECT 1")
                 except Error:
-                    pass
-                connection = None
-                cache.pop("write", None)
-        if connection is None:
+                    try:
+                        connection.close()
+                    except Error:
+                        pass
+                    connection = None
+                    cache.pop("write", None)
+            if connection is None:
+                connection = connect_pg(autocommit=False)
+                cache["write"] = connection
+            cached_connection = True
+        else:
             connection = connect_pg(autocommit=False)
-            cache["write"] = connection
     else:
         connection = connect_pg(autocommit=True)
     try:
@@ -138,7 +150,7 @@ def db_connection(*, write: bool = False) -> Iterable[Connection]:
                 pass
         raise
     finally:
-        if not write and connection is not None:
+        if connection is not None and (not write or not cached_connection):
             try:
                 connection.close()
             except Error:
