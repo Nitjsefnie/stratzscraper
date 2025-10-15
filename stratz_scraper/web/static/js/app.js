@@ -1177,6 +1177,7 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
     }
 
     nextSkip += matches.length;
+    await new Promise(r => setTimeout(r, 500));
   }
 
   return Array.from(discovered, ([steamAccountId, count]) => ({

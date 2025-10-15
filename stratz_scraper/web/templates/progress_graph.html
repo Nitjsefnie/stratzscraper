@@ -155,14 +155,14 @@
           scales: {
             x: {
               type: 'linear',
+              min: timeSeries[0]?.x,
+              max: timeSeries[timeSeries.length - 1]?.x,
               title: {
                 display: true,
                 text: 'Captured At (local time)',
               },
               ticks: {
-                callback(value) {
-                  return formatDateTime(value);
-                },
+                callback: (value) => formatDateTime(value),
                 maxRotation: 0,
                 autoSkip: true,
               },
@@ -172,7 +172,7 @@
                 display: true,
                 text: 'Count',
               },
-              beginAtZero: true,
+              // beginAtZero: true,
             },
           },
         },
