@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
@@ -179,10 +180,53 @@ def create_app() -> Flask:
     def progress():
         return jsonify(fetch_progress())
 
+    def _parse_time_param(value: str | None) -> datetime | None:
+        if value is None or value.strip() == "":
+            return None
+        cleaned = value.strip()
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(cleaned)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _format_datetime_local(value: datetime | None) -> str:
+        if value is None:
+            return ""
+        localized = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return localized.isoformat(timespec="minutes")
+
     @app.get("/progress/graph")
     def progress_graph() -> str:
-        snapshots = list_progress_snapshots()
-        return render_template("progress_graph.html", snapshots=snapshots)
+        start_raw = request.args.get("start")
+        end_raw = request.args.get("end")
+
+        start_dt = _parse_time_param(start_raw)
+        if start_raw and start_dt is None:
+            return Response(
+                "Invalid 'start' parameter. Use an ISO 8601 timestamp.", status=400
+            )
+
+        end_dt = _parse_time_param(end_raw)
+        if end_raw and end_dt is None:
+            return Response(
+                "Invalid 'end' parameter. Use an ISO 8601 timestamp.", status=400
+            )
+
+        if start_dt and end_dt and end_dt < start_dt:
+            return Response("'end' must be greater than or equal to 'start'.", status=400)
+
+        snapshots = list_progress_snapshots(start=start_dt, end=end_dt)
+        return render_template(
+            "progress_graph.html",
+            snapshots=snapshots,
+            start_value=_format_datetime_local(start_dt) if start_raw else "",
+            end_value=_format_datetime_local(end_dt) if end_raw else "",
+        )
 
     @app.get("/seed")
     def seed():

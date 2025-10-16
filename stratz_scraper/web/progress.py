@@ -162,19 +162,35 @@ def ensure_progress_snapshotter() -> None:
         _SNAPSHOT_STOP_EVENT = stop_event
 
 
-def list_progress_snapshots() -> list[dict]:
-    """Return the full history of stored progress snapshots ordered chronologically."""
+def list_progress_snapshots(
+    *, start: datetime | None = None, end: datetime | None = None
+) -> list[dict]:
+    """Return stored progress snapshots filtered by the provided time range."""
+
+    clauses: list[str] = []
+    params: list[datetime] = []
+    if start is not None:
+        clauses.append("captured_at >= %s")
+        params.append(start)
+    if end is not None:
+        clauses.append("captured_at <= %s")
+        params.append(end)
+
+    where_sql = ""
+    if clauses:
+        where_sql = " WHERE " + " AND ".join(clauses)
 
     sql = (
         """
         SELECT captured_at, players_total, hero_done, discover_done
         FROM progress_snapshots
-        ORDER BY captured_at ASC
         """
+        + where_sql
+        + " ORDER BY captured_at ASC"
     )
 
     with db_connection() as conn:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
 
     return [
         {
