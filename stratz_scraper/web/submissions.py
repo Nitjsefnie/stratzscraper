@@ -403,16 +403,14 @@ def process_discover_submission(
                         VALUES (%s, %s, FALSE, FALSE, %s)
                         ON CONFLICT (steamAccountId) DO UPDATE
                         SET
-                            depth = CASE
-                                WHEN players.depth IS NULL THEN excluded.depth
-                                WHEN excluded.depth < players.depth THEN excluded.depth
-                                ELSE players.depth
-                            END,
+                            depth = LEAST(players.depth, excluded.depth),
                             seen_count = CASE
                                 WHEN players.discover_done = FALSE
                                     THEN players.seen_count + excluded.seen_count
                                 ELSE players.seen_count
                             END
+                        WHERE players.discover_done = FALSE
+                            OR excluded.depth < players.depth
                         """,
                         child_rows[start:end],
                         reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,

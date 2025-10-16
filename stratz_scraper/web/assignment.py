@@ -107,7 +107,7 @@ def _assign_discovery(cur) -> dict | None:
               AND (assigned_to IS NULL OR assigned_to='discover')
             ORDER BY (assigned_to IS NOT NULL),
                      seen_count DESC,
-                     COALESCE(depth, 0) ASC,
+                     depth ASC,
                      steamAccountId ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED
@@ -123,11 +123,10 @@ def _assign_discovery(cur) -> dict | None:
     ).fetchone()
     if not assigned:
         return None
-    depth_value = assigned["depth"]
     return {
         "type": "discover_matches",
         "steamAccountId": int(row_value(assigned, "steamAccountId")),
-        "depth": int(depth_value) if depth_value is not None else 0,
+        "depth": int(row_value(assigned, "depth")),
     }
 
 
@@ -138,7 +137,6 @@ def _restart_discovery_cycle(cur) -> bool:
         UPDATE players
         SET discover_done=FALSE,
             seen_count=0,
-            depth=CASE WHEN depth=0 THEN 0 ELSE NULL END,
             assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
             assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
         """,

@@ -347,6 +347,9 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 """,
                 (INITIAL_PLAYER_ID,),
             )
+            cur.execute("UPDATE players SET depth=0 WHERE depth IS NULL")
+            cur.execute("ALTER TABLE players ALTER COLUMN depth SET DEFAULT 0")
+            cur.execute("ALTER TABLE players ALTER COLUMN depth SET NOT NULL")
     finally:
         if close_after:
             existing.commit()
@@ -368,6 +371,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                     WHERE hero_done=FALSE AND assigned_to IS NULL
                 """
             )
+            cur.execute("DROP INDEX IF EXISTS idx_players_discover_assignment")
             cur.execute(
                 """
                 -- stratz_scraper.web.assignment._assign_discovery
@@ -377,7 +381,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                         discover_done,
                         (assigned_to IS NOT NULL),
                         seen_count DESC,
-                        COALESCE(depth, 0),
+                        depth,
                         steamAccountId
                     )
                     WHERE hero_done=TRUE
