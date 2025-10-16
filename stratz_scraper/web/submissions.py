@@ -381,7 +381,15 @@ def process_discover_submission(
                 if new_id != steam_account_id and count > 0
             ]
             if child_rows:
-                for start in range(0, len(child_rows), _DISCOVERY_BATCH_SIZE):
+                start = 0
+                while start < len(child_rows):
+                    end = min(start + _DISCOVERY_BATCH_SIZE, len(child_rows))
+                    restart_batches = False
+
+                    def _mark_for_restart() -> None:
+                        nonlocal restart_batches
+                        restart_batches = True
+
                     retryable_executemany(
                         cur,
                         """
@@ -406,9 +414,14 @@ def process_discover_submission(
                                 ELSE players.seen_count
                             END
                         """,
-                        child_rows[start : start + _DISCOVERY_BATCH_SIZE],
+                        child_rows[start:end],
                         reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
+                        on_rollback=_mark_for_restart,
                     )
+                    if restart_batches:
+                        start = 0
+                        continue
+                    start = end
             retryable_execute(
                 cur,
                 """

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import os
 import threading
 import time
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from dotenv import load_dotenv
 from psycopg import Connection, Cursor, Error, connect, errors
@@ -228,7 +228,14 @@ def retryable_executemany(
     *,
     retry_interval: float = 0.5,
     reacquire_advisory_lock: Sequence | object | None = None,
+    on_rollback: Callable[[], None] | None = None,
 ):
+    """Execute ``executemany`` with automatic retries for transient errors.
+
+    When ``on_rollback`` is provided it will be invoked after a rollback
+    triggered by a retryable error.  Callers can use the callback to reset
+    any local state that depended on the transaction succeeding (for example
+    to restart a batched insert loop from the beginning)."""
     if not isinstance(seq_of_parameters, (list, tuple)):
         seq_of_parameters = list(seq_of_parameters)
     connection = target if isinstance(target, Connection) else target.connection
@@ -252,6 +259,8 @@ def retryable_executemany(
                 connection.rollback()
             except Error:
                 pass
+            if on_rollback is not None:
+                on_rollback()
             if reacquire_advisory_lock is not None:
                 _reacquire_advisory_lock(
                     connection,
