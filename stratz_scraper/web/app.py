@@ -95,6 +95,7 @@ def create_app() -> Flask:
                     SET hero_done=TRUE,
                         assigned_to=NULL,
                         assigned_at=NULL,
+                        seen_count=1,
                         hero_refreshed_at=CURRENT_TIMESTAMP
                     WHERE steamAccountId=%s
                     """,

@@ -264,7 +264,7 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
         while True:
             next_count = loop_count + 1
             refresh_due = next_count % 11 == 0
-            discovery_due = next_count % 4999 == 0
+            discovery_due = next_count % 1999 == 0
 
             candidate_payload = None
 

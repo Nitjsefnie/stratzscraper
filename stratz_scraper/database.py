@@ -353,20 +353,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
         with existing.cursor() as cur:
             cur.execute(
                 """
-                ALTER TABLE players
-                ADD COLUMN IF NOT EXISTS seen_count INTEGER NOT NULL DEFAULT 0
-                """
-            )
-            cur.execute(
-                "UPDATE players SET seen_count=0 WHERE seen_count IS NULL"
-            )
-            cur.execute(
-                """
-                DROP INDEX IF EXISTS idx_players_hero_pending
-                """
-            )
-            cur.execute(
-                """
                 -- stratz_scraper.web.assignment hero assignment lookups
                 CREATE INDEX IF NOT EXISTS idx_players_hero_unassigned_queue
                     ON players (steamAccountId)
