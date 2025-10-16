@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, List
 
 from ..database import (
+    close_cached_connections,
     db_connection,
     retryable_execute,
     retryable_executemany,
@@ -14,6 +15,7 @@ from ..database import (
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 _DISCOVERY_SUBMISSION_LOCK_ID = 0x646973636f766572  # "discover"
+_DISCOVERY_BATCH_SIZE = 500
 
 __all__ = [
     "BACKGROUND_EXECUTOR",
@@ -22,6 +24,16 @@ __all__ = [
     "submit_discover_submission",
     "submit_hero_submission",
 ]
+
+
+def _submit_background(func, /, *args, **kwargs) -> None:
+    def _runner() -> None:
+        try:
+            func(*args, **kwargs)
+        finally:
+            close_cached_connections()
+
+    BACKGROUND_EXECUTOR.submit(_runner)
 
 
 def _unmark_hero_task(steam_account_id: int) -> None:
@@ -369,33 +381,34 @@ def process_discover_submission(
                 if new_id != steam_account_id and count > 0
             ]
             if child_rows:
-                retryable_executemany(
-                    cur,
-                    """
-                    INSERT INTO players (
-                        steamAccountId,
-                        depth,
-                        hero_done,
-                        discover_done,
-                        seen_count
+                for start in range(0, len(child_rows), _DISCOVERY_BATCH_SIZE):
+                    retryable_executemany(
+                        cur,
+                        """
+                        INSERT INTO players (
+                            steamAccountId,
+                            depth,
+                            hero_done,
+                            discover_done,
+                            seen_count
+                        )
+                        VALUES (%s, %s, FALSE, FALSE, %s)
+                        ON CONFLICT (steamAccountId) DO UPDATE
+                        SET
+                            depth = CASE
+                                WHEN players.depth IS NULL THEN excluded.depth
+                                WHEN excluded.depth < players.depth THEN excluded.depth
+                                ELSE players.depth
+                            END,
+                            seen_count = CASE
+                                WHEN players.discover_done = FALSE
+                                    THEN players.seen_count + excluded.seen_count
+                                ELSE players.seen_count
+                            END
+                        """,
+                        child_rows[start : start + _DISCOVERY_BATCH_SIZE],
+                        reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
                     )
-                    VALUES (%s, %s, FALSE, FALSE, %s)
-                    ON CONFLICT (steamAccountId) DO UPDATE
-                    SET
-                        depth = CASE
-                            WHEN players.depth IS NULL THEN excluded.depth
-                            WHEN excluded.depth < players.depth THEN excluded.depth
-                            ELSE players.depth
-                        END,
-                        seen_count = CASE
-                            WHEN players.discover_done = FALSE
-                                THEN players.seen_count + excluded.seen_count
-                            ELSE players.seen_count
-                        END
-                    """,
-                    child_rows,
-                    reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
-                )
             retryable_execute(
                 cur,
                 """
@@ -419,7 +432,7 @@ def submit_hero_submission(
     steam_account_id: int,
     heroes_payload: Iterable[dict] | None,
 ) -> None:
-    BACKGROUND_EXECUTOR.submit(
+    _submit_background(
         process_hero_submission,
         steam_account_id,
         heroes_payload,
@@ -433,7 +446,7 @@ def submit_discover_submission(
     provided_depth: int | None,
     assignment_depth: int | None,
 ) -> None:
-    BACKGROUND_EXECUTOR.submit(
+    _submit_background(
         process_discover_submission,
         steam_account_id,
         discovered_payload,
