@@ -369,7 +369,6 @@ def process_discover_submission(
     )
     try:
         with db_connection(write=True) as conn:
-            cur = conn.cursor()
             child_rows = [
                 (new_id, next_depth_value, max(count, 0))
                 for new_id, count in discovered_counts
@@ -377,16 +376,11 @@ def process_discover_submission(
             ]
             if child_rows:
                 start = 0
-                while start < len(child_rows):
-                    end = min(start + _DISCOVERY_BATCH_SIZE, len(child_rows))
-                    restart_batches = False
-
-                    def _mark_for_restart() -> None:
-                        nonlocal restart_batches
-                        restart_batches = True
-
+                total = len(child_rows)
+                while start < total:
+                    end = min(start + _DISCOVERY_BATCH_SIZE, total)
                     retryable_executemany(
-                        cur,
+                        conn,
                         """
                         INSERT INTO players (
                             steamAccountId,
@@ -409,20 +403,18 @@ def process_discover_submission(
                         """,
                         child_rows[start:end],
                         reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
-                        on_rollback=_mark_for_restart,
                     )
-                    if restart_batches:
-                        start = 0
-                        continue
+                    conn.commit()
                     start = end
-            retryable_execute(
-                cur,
-                """
-                UPDATE meta
-                SET value = '-1'
-                WHERE key = 'hero_assignment_cursor';
-                """
-            )
+            with conn.cursor() as cur:
+                retryable_execute(
+                    cur,
+                    """
+                    UPDATE meta
+                    SET value = '-1'
+                    WHERE key = 'hero_assignment_cursor';
+                    """
+                )
     except Exception:
         import traceback
 
