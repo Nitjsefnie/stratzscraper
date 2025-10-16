@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, List
+from typing import Iterable, Iterator, List
 
 from ..database import (
     close_cached_connections,
@@ -104,13 +105,13 @@ def _extract_hero_rows(
     return hero_stats_rows, hero_ids
 
 
-def _extract_discovered_counts(values: Iterable[object] | None) -> List[tuple[int, int]]:
-    aggregated: dict[int, int] = {}
-    order: List[int] = []
+def _iter_discovered_counts(
+    values: Iterable[object] | None,
+) -> Iterator[tuple[int, int]]:
     if values is None:
-        return []
+        return
     for value in values:
-        candidate_id = None
+        candidate_id: object | None
         count_value: int | None = 1
         if isinstance(value, dict):
             candidate_id = value.get("steamAccountId")
@@ -127,26 +128,57 @@ def _extract_discovered_counts(values: Iterable[object] | None) -> List[tuple[in
         else:
             candidate_id = value
         try:
-            candidate_id = int(candidate_id)
+            normalized_id = int(candidate_id)
         except (TypeError, ValueError):
             continue
-        if candidate_id <= 0:
+        if normalized_id <= 0:
             continue
         if count_value is None:
-            count_value = 0
+            continue
         if not isinstance(count_value, int):
             try:
                 count_value = int(count_value)
             except (TypeError, ValueError):
-                count_value = 0
+                continue
         if count_value <= 0:
             continue
-        if candidate_id not in aggregated:
-            aggregated[candidate_id] = count_value
-            order.append(candidate_id)
+        yield normalized_id, count_value
+
+
+def _iter_discovered_child_rows(
+    discovered_payload: Iterable[object] | None,
+    *,
+    parent_id: int,
+    next_depth: int,
+    batch_size: int,
+) -> Iterator[List[tuple[int, int, int]]]:
+    effective_batch_size = max(1, batch_size)
+    pending: OrderedDict[int, int] = OrderedDict()
+    for candidate_id, count in _iter_discovered_counts(discovered_payload):
+        if candidate_id == parent_id:
+            continue
+        existing = pending.get(candidate_id)
+        if existing is None:
+            pending[candidate_id] = count
         else:
-            aggregated[candidate_id] += count_value
-    return [(pid, aggregated[pid]) for pid in order]
+            pending[candidate_id] = existing + count
+        if len(pending) >= effective_batch_size:
+            batch = [
+                (pid, next_depth, total)
+                for pid, total in pending.items()
+                if total > 0
+            ]
+            if batch:
+                yield batch
+            pending = OrderedDict()
+    if pending:
+        batch = [
+            (pid, next_depth, total)
+            for pid, total in pending.items()
+            if total > 0
+        ]
+        if batch:
+            yield batch
 
 
 def _resolve_next_depth(
@@ -361,7 +393,6 @@ def process_discover_submission(
     parsed_next_depth = _coerce_optional_int(provided_next_depth)
     parsed_depth = _coerce_optional_int(provided_depth)
     parsed_assignment_depth = _coerce_optional_int(assignment_depth)
-    discovered_counts = _extract_discovered_counts(discovered_payload)
     next_depth_value = _resolve_next_depth(
         parsed_next_depth,
         parsed_depth,
@@ -369,43 +400,38 @@ def process_discover_submission(
     )
     try:
         with db_connection(write=True) as conn:
-            child_rows = [
-                (new_id, next_depth_value, max(count, 0))
-                for new_id, count in discovered_counts
-                if new_id != steam_account_id and count > 0
-            ]
-            if child_rows:
-                start = 0
-                total = len(child_rows)
-                while start < total:
-                    end = min(start + _DISCOVERY_BATCH_SIZE, total)
-                    retryable_executemany(
-                        conn,
-                        """
-                        INSERT INTO players (
-                            steamAccountId,
-                            depth,
-                            hero_done,
-                            discover_done,
-                            seen_count
-                        )
-                        VALUES (%s, %s, FALSE, FALSE, %s)
-                        ON CONFLICT (steamAccountId) DO UPDATE
-                        SET
-                            depth = LEAST(players.depth, excluded.depth),
-                            seen_count = CASE
-                                WHEN players.discover_done = FALSE
-                                    THEN players.seen_count + excluded.seen_count
-                                ELSE players.seen_count
-                            END
-                        WHERE players.discover_done = FALSE
-                            OR excluded.depth < players.depth
-                        """,
-                        child_rows[start:end],
-                        reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
+            for child_rows in _iter_discovered_child_rows(
+                discovered_payload,
+                parent_id=steam_account_id,
+                next_depth=next_depth_value,
+                batch_size=_DISCOVERY_BATCH_SIZE,
+            ):
+                retryable_executemany(
+                    conn,
+                    """
+                    INSERT INTO players (
+                        steamAccountId,
+                        depth,
+                        hero_done,
+                        discover_done,
+                        seen_count
                     )
-                    conn.commit()
-                    start = end
+                    VALUES (%s, %s, FALSE, FALSE, %s)
+                    ON CONFLICT (steamAccountId) DO UPDATE
+                    SET
+                        depth = LEAST(players.depth, excluded.depth),
+                        seen_count = CASE
+                            WHEN players.discover_done = FALSE
+                                THEN players.seen_count + excluded.seen_count
+                            ELSE players.seen_count
+                        END
+                    WHERE players.discover_done = FALSE
+                        OR excluded.depth < players.depth
+                    """,
+                    child_rows,
+                    reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
+                )
+                conn.commit()
             with conn.cursor() as cur:
                 retryable_execute(
                     cur,
