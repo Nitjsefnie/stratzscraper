@@ -163,6 +163,15 @@ def _iter_discovered_child_rows(
 ) -> Iterator[List[tuple[int, int, int]]]:
     effective_batch_size = max(1, batch_size)
     pending: OrderedDict[int, int] = OrderedDict()
+
+    def _drain_pending(limit: int | None) -> List[tuple[int, int, int]]:
+        batch: List[tuple[int, int, int]] = []
+        while pending and (limit is None or len(batch) < limit):
+            candidate, total = pending.popitem(last=False)
+            if total > 0:
+                batch.append((candidate, next_depth, total))
+        return batch
+
     for candidate_id, count in _iter_discovered_counts(discovered_payload):
         if candidate_id == parent_id:
             continue
@@ -172,20 +181,11 @@ def _iter_discovered_child_rows(
         else:
             pending[candidate_id] = existing + count
         if len(pending) >= effective_batch_size:
-            batch = [
-                (pid, next_depth, total)
-                for pid, total in pending.items()
-                if total > 0
-            ]
+            batch = _drain_pending(effective_batch_size)
             if batch:
                 yield batch
-            pending = OrderedDict()
     if pending:
-        batch = [
-            (pid, next_depth, total)
-            for pid, total in pending.items()
-            if total > 0
-        ]
+        batch = _drain_pending(None)
         if batch:
             yield batch
 
