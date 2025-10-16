@@ -288,7 +288,7 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 """
                 CREATE TABLE IF NOT EXISTS players (
                     steamAccountId BIGINT PRIMARY KEY,
-                    depth INTEGER,
+                    depth INTEGER NOT NULL,
                     assigned_to TEXT,
                     assigned_at TIMESTAMPTZ,
                     hero_refreshed_at TIMESTAMPTZ,
@@ -347,8 +347,6 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 """,
                 (INITIAL_PLAYER_ID,),
             )
-            cur.execute("UPDATE players SET depth=0 WHERE depth IS NULL")
-            cur.execute("ALTER TABLE players ALTER COLUMN depth SET DEFAULT 0")
             cur.execute("ALTER TABLE players ALTER COLUMN depth SET NOT NULL")
     finally:
         if close_after:
@@ -375,7 +373,7 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             cur.execute(
                 """
                 -- stratz_scraper.web.assignment._assign_discovery
-                CREATE INDEX IF NOT EXISTS idx_players_discover_assignment
+                CREATE INDEX IF NOT EXISTS idx_players_discover_assignment_noncol
                     ON players (
                         hero_done,
                         discover_done,

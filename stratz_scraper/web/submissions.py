@@ -370,11 +370,6 @@ def process_discover_submission(
     try:
         with db_connection(write=True) as conn:
             cur = conn.cursor()
-            retryable_execute(
-                cur,
-                "SELECT pg_advisory_xact_lock(%s)",
-                (_DISCOVERY_SUBMISSION_LOCK_ID,),
-            )
             child_rows = [
                 (new_id, next_depth_value, max(count, 0))
                 for new_id, count in discovered_counts
