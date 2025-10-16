@@ -137,7 +137,7 @@ def create_app() -> Flask:
                     provided_depth = int(depth_raw)
                 except (TypeError, ValueError):
                     provided_depth = None
-            discovered_payload = data.get("discovered", [])
+            discovered_payload = data.pop("discovered", [])
             assignment_depth = None
             next_task = None
             with db_connection(write=True) as conn:

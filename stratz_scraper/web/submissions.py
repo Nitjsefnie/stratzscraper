@@ -105,12 +105,21 @@ def _extract_hero_rows(
     return hero_stats_rows, hero_ids
 
 
+def _iter_consuming_values(values: Iterable[object]) -> Iterator[object]:
+    if isinstance(values, list):
+        while values:
+            yield values.pop()
+        return
+    for value in values:
+        yield value
+
+
 def _iter_discovered_counts(
     values: Iterable[object] | None,
 ) -> Iterator[tuple[int, int]]:
     if values is None:
         return
-    for value in values:
+    for value in _iter_consuming_values(values):
         candidate_id: object | None
         count_value: int | None = 1
         if isinstance(value, dict):
