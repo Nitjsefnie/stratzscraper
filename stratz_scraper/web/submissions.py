@@ -114,26 +114,17 @@ def _iter_consuming_values(values: Iterable[object]) -> Iterator[object]:
         yield value
 
 
-def _iter_discovered_counts(
+def _iter_discovered_candidate_ids(
     values: Iterable[object] | None,
-) -> Iterator[tuple[int, int]]:
+) -> Iterator[int]:
     if values is None:
         return
     for value in _iter_consuming_values(values):
         candidate_id: object | None
-        count_value: int | None = 1
         if isinstance(value, dict):
             candidate_id = value.get("steamAccountId")
             if candidate_id is None:
                 candidate_id = value.get("id")
-            count_raw = value.get("count")
-            if count_raw is None:
-                count_raw = value.get("seenCount")
-            if count_raw is not None:
-                try:
-                    count_value = int(count_raw)
-                except (TypeError, ValueError):
-                    count_value = 0
         else:
             candidate_id = value
         try:
@@ -142,16 +133,7 @@ def _iter_discovered_counts(
             continue
         if normalized_id <= 0:
             continue
-        if count_value is None:
-            continue
-        if not isinstance(count_value, int):
-            try:
-                count_value = int(count_value)
-            except (TypeError, ValueError):
-                continue
-        if count_value <= 0:
-            continue
-        yield normalized_id, count_value
+        yield normalized_id
 
 
 def _iter_discovered_child_rows(
@@ -160,26 +142,23 @@ def _iter_discovered_child_rows(
     parent_id: int,
     next_depth: int,
     batch_size: int,
-) -> Iterator[List[tuple[int, int, int]]]:
+) -> Iterator[List[tuple[int, int]]]:
     effective_batch_size = max(1, batch_size)
-    pending: OrderedDict[int, int] = OrderedDict()
+    pending: OrderedDict[int, None] = OrderedDict()
 
-    def _drain_pending(limit: int | None) -> List[tuple[int, int, int]]:
-        batch: List[tuple[int, int, int]] = []
+    def _drain_pending(limit: int | None) -> List[tuple[int, int]]:
+        batch: List[tuple[int, int]] = []
         while pending and (limit is None or len(batch) < limit):
-            candidate, total = pending.popitem(last=False)
-            if total > 0:
-                batch.append((candidate, next_depth, total))
+            candidate, _ = pending.popitem(last=False)
+            batch.append((candidate, next_depth))
         return batch
 
-    for candidate_id, count in _iter_discovered_counts(discovered_payload):
+    for candidate_id in _iter_discovered_candidate_ids(discovered_payload):
         if candidate_id == parent_id:
             continue
-        existing = pending.get(candidate_id)
-        if existing is None:
-            pending[candidate_id] = count
-        else:
-            pending[candidate_id] = existing + count
+        if candidate_id in pending:
+            continue
+        pending[candidate_id] = None
         if len(pending) >= effective_batch_size:
             batch = _drain_pending(effective_batch_size)
             if batch:
@@ -422,10 +401,9 @@ def process_discover_submission(
                         steamAccountId,
                         depth,
                         hero_done,
-                        discover_done,
-                        seen_count
+                        discover_done
                     )
-                    VALUES (%s, %s, FALSE, FALSE, %s)
+                    VALUES (%s, %s, FALSE, FALSE)
                     ON CONFLICT (steamAccountId) DO UPDATE
                     SET
                         depth = excluded.depth

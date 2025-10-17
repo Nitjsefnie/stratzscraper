@@ -293,10 +293,12 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                     assigned_at TIMESTAMPTZ,
                     hero_refreshed_at TIMESTAMPTZ,
                     hero_done BOOLEAN DEFAULT FALSE,
-                    discover_done BOOLEAN DEFAULT FALSE,
-                    seen_count INTEGER NOT NULL DEFAULT 0
+                    discover_done BOOLEAN DEFAULT FALSE
                 )
                 """
+            )
+            cur.execute(
+                "ALTER TABLE players DROP COLUMN IF EXISTS seen_count"
             )
             cur.execute(
                 """
@@ -368,6 +370,9 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                 """
             )
             cur.execute(
+                "DROP INDEX IF EXISTS idx_players_discover_assignment_noncol"
+            )
+            cur.execute(
                 """
                 -- stratz_scraper.web.assignment._assign_discovery
                 CREATE INDEX IF NOT EXISTS idx_players_discover_assignment_noncol
@@ -375,7 +380,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                         hero_done,
                         discover_done,
                         (assigned_to IS NOT NULL),
-                        seen_count DESC,
                         depth,
                         steamAccountId
                     )
@@ -385,12 +389,14 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                 """
             )
             cur.execute(
+                "DROP INDEX IF EXISTS idx_players_hero_refresh_queue"
+            )
+            cur.execute(
                 """
                 -- stratz_scraper.web.assignment.assign_next_task hero refresh scheduling
                 CREATE INDEX IF NOT EXISTS idx_players_hero_refresh_queue
                     ON players (
                         hero_refreshed_at ASC NULLS FIRST,
-                        seen_count DESC,
                         steamAccountId ASC
                     )
                     WHERE hero_done=TRUE

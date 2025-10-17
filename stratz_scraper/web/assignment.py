@@ -106,7 +106,6 @@ def _assign_discovery(cur) -> dict | None:
               AND discover_done=FALSE
               AND (assigned_to IS NULL OR assigned_to='discover')
             ORDER BY (assigned_to IS NOT NULL),
-                     seen_count DESC,
                      depth ASC,
                      steamAccountId ASC
             LIMIT 1
@@ -136,7 +135,6 @@ def _restart_discovery_cycle(cur) -> bool:
         """
         UPDATE players
         SET discover_done=FALSE,
-            seen_count=0,
             assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
             assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
         """,
@@ -281,7 +279,6 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                         WHERE hero_done=TRUE
                           AND assigned_to IS NULL
                         ORDER BY hero_refreshed_at ASC NULLS FIRST,
-                                 seen_count DESC,
                                  steamAccountId ASC
                         LIMIT 1
                         FOR UPDATE SKIP LOCKED
