@@ -309,7 +309,6 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 )
                 """
             )
-            cur.execute("DROP TABLE IF EXISTS best")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hero_top100 (
@@ -347,7 +346,6 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 """,
                 (INITIAL_PLAYER_ID,),
             )
-            cur.execute("ALTER TABLE players ALTER COLUMN depth SET NOT NULL")
     finally:
         if close_after:
             existing.commit()
@@ -369,7 +367,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                     WHERE hero_done=FALSE AND assigned_to IS NULL
                 """
             )
-            cur.execute("DROP INDEX IF EXISTS idx_players_discover_assignment")
             cur.execute(
                 """
                 -- stratz_scraper.web.assignment._assign_discovery
