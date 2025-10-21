@@ -158,6 +158,134 @@ function formatWinRate(wins, matches) {
   return `${rate.toFixed(1)}%`;
 }
 
+function base64UrlDecode(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+
+  try {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = normalized.length % 4;
+    const padded = padding === 0 ? normalized : normalized.padEnd(normalized.length + (4 - padding), "=");
+    return atob(padded);
+  } catch (error) {
+    return null;
+  }
+}
+
+function decodeJwtPayload(tokenValue) {
+  if (typeof tokenValue !== "string") {
+    return null;
+  }
+
+  const trimmed = tokenValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parts = trimmed.split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+
+  const payload = base64UrlDecode(parts[1]);
+  if (!payload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(payload);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function getFirstNumericClaim(payload, keys) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(payload, key)) {
+      const value = Number(payload[key]);
+      if (Number.isFinite(value)) {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractSteamIdFromPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const possibleKeys = [
+    "SteamId",
+    "SteamID",
+    "SteamID64",
+    "steamId",
+    "steamID",
+    "steamid",
+    "steam_id",
+    "steam_id64",
+    "SteamAccountId",
+    "steamAccountId",
+    "AccountId",
+    "accountId",
+  ];
+  for (const key of possibleKeys) {
+    const value = normalizeSteamAccountId(payload[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function getTokenMeta(tokenValue) {
+  const payload = decodeJwtPayload(tokenValue);
+  if (!payload) {
+    return null;
+  }
+
+  const steamId = extractSteamIdFromPayload(payload);
+  const issuedAt = getFirstNumericClaim(payload, ["iat", "Iat", "issuedAt", "IssuedAt"]);
+  const notBefore = getFirstNumericClaim(payload, ["nbf", "Nbf", "notBefore", "NotBefore"]);
+  const expiresAt = getFirstNumericClaim(payload, ["exp", "Exp", "expires", "Expires"]);
+
+  return {
+    steamId,
+    issuedAt,
+    notBefore,
+    expiresAt,
+  };
+}
+
+function compareTokenFreshness(newMeta, existingMeta) {
+  if (!newMeta || !existingMeta) {
+    return "unknown";
+  }
+
+  const compareFields = ["issuedAt", "notBefore", "expiresAt"];
+
+  for (const field of compareFields) {
+    const a = newMeta[field];
+    const b = existingMeta[field];
+    if (Number.isFinite(a) && Number.isFinite(b)) {
+      if (a > b) return "newer";
+      if (a < b) return "older";
+      return "same";
+    }
+  }
+
+  return "unknown";
+}
+
 function appendLogLine(element, line, {
   maxLength = 50_000,
   retainLength = 40_000,
@@ -1679,6 +1807,56 @@ elements.begin.addEventListener("click", () => {
     alert("Add a Stratz token first.");
     return;
   }
+
+  const runningBySteamId = new Map();
+  state.tokens
+    .filter((token) => token.running && !token.stopRequested && token.value.trim().length > 0)
+    .forEach((token) => {
+      const meta = getTokenMeta(token.value);
+      if (meta?.steamId) {
+        runningBySteamId.set(meta.steamId, { token, meta });
+      }
+    });
+
+  const warnings = [];
+
+  readyTokens.forEach((token) => {
+    const meta = getTokenMeta(token.value);
+    if (!meta) {
+      logToken(token, "Unable to decode token payload; SteamID duplicate check skipped.");
+      return;
+    }
+
+    if (!meta.steamId) {
+      logToken(token, "Token payload does not include a SteamID; duplicate check skipped.");
+      return;
+    }
+
+    const running = runningBySteamId.get(meta.steamId);
+    if (!running) {
+      return;
+    }
+
+    const freshness = compareTokenFreshness(meta, running.meta);
+    let freshnessText = "Unable to determine which token is newer.";
+    if (freshness === "newer") {
+      freshnessText = "The new token appears newer than the running token.";
+    } else if (freshness === "older") {
+      freshnessText = "The new token appears older than the running token.";
+    } else if (freshness === "same") {
+      freshnessText = "Both tokens appear to have been issued at the same time.";
+    }
+
+    const runningLabel = getTokenLabel(running.token);
+    const message = `Token #${getTokenLabel(token)} uses SteamID ${meta.steamId}, which is already running on Token #${runningLabel}. ${freshnessText}`;
+    warnings.push(message);
+    logToken(token, message);
+  });
+
+  if (warnings.length) {
+    alert(warnings.join("\n\n"));
+  }
+
   readyTokens.forEach((token) => {
     startToken(token);
   });
