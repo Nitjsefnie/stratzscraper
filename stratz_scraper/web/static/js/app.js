@@ -286,6 +286,138 @@ function compareTokenFreshness(newMeta, existingMeta) {
   return "unknown";
 }
 
+function getFreshnessTextForRunning(freshness) {
+  if (freshness === "newer") {
+    return "The new token appears newer than the running token.";
+  }
+  if (freshness === "older") {
+    return "The new token appears older than the running token.";
+  }
+  if (freshness === "same") {
+    return "Both tokens appear to have been issued at the same time.";
+  }
+  return "Unable to determine which token is newer.";
+}
+
+function getFreshnessTextBetweenTokens(freshness, currentLabel, otherLabel) {
+  if (freshness === "newer") {
+    return `Token #${currentLabel} appears newer than Token #${otherLabel}.`;
+  }
+  if (freshness === "older") {
+    return `Token #${currentLabel} appears older than Token #${otherLabel}.`;
+  }
+  if (freshness === "same") {
+    return "Both tokens appear to have been issued at the same time.";
+  }
+  return "Unable to determine which token is newer.";
+}
+
+function getTokenSteamIdInfo(token, { logIssues = false } = {}) {
+  if (!token) {
+    return null;
+  }
+
+  const rawValue = typeof token.value === "string" ? token.value : "";
+  const trimmed = rawValue.trim();
+  if (!trimmed.length) {
+    return null;
+  }
+
+  const meta = getTokenMeta(trimmed);
+  if (!meta) {
+    if (logIssues) {
+      logToken(token, "Unable to decode token payload; SteamID duplicate check skipped.");
+    }
+    return null;
+  }
+
+  if (!meta.steamId) {
+    if (logIssues) {
+      logToken(token, "Token payload does not include a SteamID; duplicate check skipped.");
+    }
+    return null;
+  }
+
+  return { token, meta, steamId: meta.steamId };
+}
+
+function checkSteamIdConflicts(tokensToStart, { alertOnWarning = true } = {}) {
+  if (!Array.isArray(tokensToStart) || !tokensToStart.length) {
+    return [];
+  }
+
+  const warnings = [];
+  const warningSet = new Set();
+
+  const addWarning = (message) => {
+    if (!warningSet.has(message)) {
+      warningSet.add(message);
+      warnings.push(message);
+    }
+  };
+
+  const runningBySteamId = new Map();
+  state.tokens
+    .filter(
+      (token) =>
+        token &&
+        token.running &&
+        !token.stopRequested &&
+        typeof token.value === "string" &&
+        token.value.trim().length > 0,
+    )
+    .forEach((token) => {
+      const info = getTokenSteamIdInfo(token);
+      if (info) {
+        runningBySteamId.set(info.steamId, info);
+      }
+    });
+
+  const pendingBySteamId = new Map();
+
+  tokensToStart.forEach((token) => {
+    const info = getTokenSteamIdInfo(token, { logIssues: true });
+    if (!info) {
+      return;
+    }
+
+    const currentLabel = getTokenLabel(token);
+
+    const running = runningBySteamId.get(info.steamId);
+    if (running) {
+      const freshnessText = getFreshnessTextForRunning(
+        compareTokenFreshness(info.meta, running.meta),
+      );
+      const runningLabel = getTokenLabel(running.token);
+      const message = `Token #${currentLabel} uses SteamID ${info.steamId}, which is already running on Token #${runningLabel}. ${freshnessText}`;
+      addWarning(message);
+      logToken(token, message);
+    }
+
+    const existing = pendingBySteamId.get(info.steamId);
+    if (existing) {
+      existing.forEach((otherInfo) => {
+        const otherLabel = getTokenLabel(otherInfo.token);
+        const freshness = compareTokenFreshness(info.meta, otherInfo.meta);
+        const freshnessText = getFreshnessTextBetweenTokens(freshness, currentLabel, otherLabel);
+        const message = `Tokens #${currentLabel} and #${otherLabel} both use SteamID ${info.steamId}. ${freshnessText}`;
+        addWarning(message);
+        logToken(token, message);
+        logToken(otherInfo.token, message);
+      });
+      existing.push(info);
+    } else {
+      pendingBySteamId.set(info.steamId, [info]);
+    }
+  });
+
+  if (warnings.length && alertOnWarning) {
+    alert(warnings.join("\n\n"));
+  }
+
+  return warnings;
+}
+
 function appendLogLine(element, line, {
   maxLength = 50_000,
   retainLength = 40_000,
@@ -924,13 +1056,16 @@ function removeToken(id) {
   updateRunningState();
 }
 
-function startToken(token) {
+function startToken(token, { skipDuplicateCheck = false } = {}) {
   if (!token || token.running || token.stopRequested) {
     return;
   }
   const trimmed = token.value.trim();
   if (!trimmed.length) {
     return;
+  }
+  if (!skipDuplicateCheck) {
+    checkSteamIdConflicts([token]);
   }
   workLoopForToken(token).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -1866,57 +2001,10 @@ elements.begin.addEventListener("click", () => {
     return;
   }
 
-  const runningBySteamId = new Map();
-  state.tokens
-    .filter((token) => token.running && !token.stopRequested && token.value.trim().length > 0)
-    .forEach((token) => {
-      const meta = getTokenMeta(token.value);
-      if (meta?.steamId) {
-        runningBySteamId.set(meta.steamId, { token, meta });
-      }
-    });
-
-  const warnings = [];
+  checkSteamIdConflicts(readyTokens);
 
   readyTokens.forEach((token) => {
-    const meta = getTokenMeta(token.value);
-    if (!meta) {
-      logToken(token, "Unable to decode token payload; SteamID duplicate check skipped.");
-      return;
-    }
-
-    if (!meta.steamId) {
-      logToken(token, "Token payload does not include a SteamID; duplicate check skipped.");
-      return;
-    }
-
-    const running = runningBySteamId.get(meta.steamId);
-    if (!running) {
-      return;
-    }
-
-    const freshness = compareTokenFreshness(meta, running.meta);
-    let freshnessText = "Unable to determine which token is newer.";
-    if (freshness === "newer") {
-      freshnessText = "The new token appears newer than the running token.";
-    } else if (freshness === "older") {
-      freshnessText = "The new token appears older than the running token.";
-    } else if (freshness === "same") {
-      freshnessText = "Both tokens appear to have been issued at the same time.";
-    }
-
-    const runningLabel = getTokenLabel(running.token);
-    const message = `Token #${getTokenLabel(token)} uses SteamID ${meta.steamId}, which is already running on Token #${runningLabel}. ${freshnessText}`;
-    warnings.push(message);
-    logToken(token, message);
-  });
-
-  if (warnings.length) {
-    alert(warnings.join("\n\n"));
-  }
-
-  readyTokens.forEach((token) => {
-    startToken(token);
+    startToken(token, { skipDuplicateCheck: true });
   });
 });
 
