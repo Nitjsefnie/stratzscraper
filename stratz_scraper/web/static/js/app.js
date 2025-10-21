@@ -420,6 +420,20 @@ function formatTokenSummaryMeta(token) {
   return parts.join(" • ");
 }
 
+function formatJwtTimestamp(value) {
+  if (!Number.isFinite(value)) {
+    return "—";
+  }
+
+  const msCandidate = value > 1e12 ? value : value * 1000;
+  const date = new Date(msCandidate);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+
+  return date.toLocaleString();
+}
+
 function updateTokenSummary() {
   if (!elements.tokenSummary) {
     return;
@@ -808,6 +822,13 @@ function updateTokenDisplay(token) {
     summaryTitle,
     summaryStatus,
     summaryMeta,
+    jwtMetaContainer,
+    jwtSteamIdValue,
+    jwtExpiresValue,
+    jwtIssuedValue,
+    jwtNotBeforeValue,
+    avgTaskTimeValue,
+    tasksPerDayValue,
   } = token.dom;
 
   tokenInput.value = token.value;
@@ -849,13 +870,30 @@ function updateTokenDisplay(token) {
   }
 
   const averageMs = getTokenAverageTaskMs(token);
-  if (token.dom.avgTaskTimeValue) {
-    token.dom.avgTaskTimeValue.textContent = formatAverageTaskTime(averageMs);
+  if (avgTaskTimeValue) {
+    avgTaskTimeValue.textContent = formatAverageTaskTime(averageMs);
   }
 
-  if (token.dom.tasksPerDayValue) {
+  if (tasksPerDayValue) {
     const tasksPerDay = getTokenTasksPerDay(token);
-    token.dom.tasksPerDayValue.textContent = formatTasksPerDay(tasksPerDay);
+    tasksPerDayValue.textContent = formatTasksPerDay(tasksPerDay);
+  }
+
+  if (
+    jwtMetaContainer
+    && jwtSteamIdValue
+    && jwtExpiresValue
+    && jwtIssuedValue
+    && jwtNotBeforeValue
+  ) {
+    const shouldShowMeta = token.running;
+    jwtMetaContainer.style.display = shouldShowMeta ? "" : "none";
+
+    const metaInfo = shouldShowMeta ? getTokenMeta(token.value) : null;
+    jwtSteamIdValue.textContent = metaInfo?.steamId ?? "—";
+    jwtExpiresValue.textContent = formatJwtTimestamp(metaInfo?.expiresAt);
+    jwtIssuedValue.textContent = formatJwtTimestamp(metaInfo?.issuedAt);
+    jwtNotBeforeValue.textContent = formatJwtTimestamp(metaInfo?.notBefore);
   }
 
   row.classList.toggle("token-row-running", token.running && !token.stopRequested);
@@ -1101,6 +1139,21 @@ function renderTokens() {
       return { container, valueEl };
     };
 
+    const jwtMeta = document.createElement("div");
+    jwtMeta.className = "token-meta";
+
+    const steamIdItem = createMetaItem("SteamID");
+    const expiresItem = createMetaItem("Expires");
+    const issuedItem = createMetaItem("Issued");
+    const notBeforeItem = createMetaItem("Not before");
+
+    jwtMeta.append(
+      steamIdItem.container,
+      expiresItem.container,
+      issuedItem.container,
+      notBeforeItem.container,
+    );
+
     const statusItem = createMetaItem("Status");
     const backoffItem = createMetaItem("Backoff");
     const requestsItem = createMetaItem("Requests remaining");
@@ -1131,7 +1184,7 @@ function renderTokens() {
 
     logContainer.append(logLabel, logView);
 
-    body.append(topRow, meta, logContainer);
+    body.append(topRow, jwtMeta, meta, logContainer);
     row.append(summary, body);
     elements.tokenList.appendChild(row);
 
@@ -1151,6 +1204,11 @@ function renderTokens() {
       log: logView,
       avgTaskTimeValue: avgTaskItem.valueEl,
       tasksPerDayValue: projectionItem.valueEl,
+      jwtMetaContainer: jwtMeta,
+      jwtSteamIdValue: steamIdItem.valueEl,
+      jwtExpiresValue: expiresItem.valueEl,
+      jwtIssuedValue: issuedItem.valueEl,
+      jwtNotBeforeValue: notBeforeItem.valueEl,
     };
 
     updateTokenDisplay(token);
