@@ -415,6 +415,16 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
+                -- stratz_scraper.web.assignment._discovery_backlog_exceeded
+                CREATE INDEX IF NOT EXISTS idx_players_discover_fullwrite_backlog
+                    ON players (steamAccountId)
+                    WHERE discover_done=TRUE
+                      AND full_write_done=FALSE
+                      AND highest_match_id IS NOT NULL
+                """
+            )
+            cur.execute(
+                """
                 -- stratz_scraper.database.release_incomplete_assignments
                 CREATE INDEX IF NOT EXISTS idx_players_assignment_state
                     ON players (

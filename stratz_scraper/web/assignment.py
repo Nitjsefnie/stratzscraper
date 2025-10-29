@@ -95,7 +95,31 @@ def maybe_run_assignment_cleanup(conn) -> bool:
     return True
 
 
+def _discovery_backlog_exceeded(cur) -> bool:
+    backlog_row = retryable_execute(
+        cur,
+        """
+        SELECT COUNT(*) AS backlog
+        FROM players
+        WHERE discover_done=TRUE
+          AND full_write_done=FALSE
+          AND highest_match_id IS NOT NULL
+        """,
+        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
+    ).fetchone()
+
+    try:
+        backlog_count = int(row_value(backlog_row, "backlog")) if backlog_row else 0
+    except (TypeError, ValueError):
+        backlog_count = 0
+
+    return backlog_count > 100
+
+
 def _assign_discovery(cur) -> dict | None:
+    if _discovery_backlog_exceeded(cur):
+        return None
+
     assigned = retryable_execute(
         cur,
         """
