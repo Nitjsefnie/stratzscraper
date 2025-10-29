@@ -104,9 +104,8 @@ def _assign_discovery(cur) -> dict | None:
             FROM players
             WHERE hero_done=TRUE
               AND discover_done=FALSE
-              AND (assigned_to IS NULL OR assigned_to='discover')
-            ORDER BY (assigned_to IS NOT NULL),
-                     depth ASC,
+              AND assigned_to IS NULL
+            ORDER BY depth ASC,
                      steamAccountId ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED
@@ -115,7 +114,7 @@ def _assign_discovery(cur) -> dict | None:
         SET assigned_to='discover',
             assigned_at=CURRENT_TIMESTAMP
         WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-          AND (assigned_to IS NULL OR assigned_to='discover')
+          AND assigned_to IS NULL
         RETURNING steamAccountId, depth, highest_match_id
         """,
         retry_interval=ASSIGNMENT_RETRY_INTERVAL,
@@ -139,7 +138,9 @@ def _assign_discovery(cur) -> dict | None:
         highest_match_id = None
 
     if steam_id == 0:
-        cur.execute("UPDATE players SET discover_done=TRUE WHERE steamAccountId=0")
+        cur.execute(
+            "UPDATE players SET discover_done=TRUE, full_write_done=TRUE WHERE steamAccountId=0"
+        )
         return _assign_discovery(cur)
 
     return {
@@ -156,6 +157,7 @@ def _restart_discovery_cycle(cur) -> bool:
         """
         UPDATE players
         SET discover_done=FALSE,
+            full_write_done=FALSE,
             assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
             assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
         """,

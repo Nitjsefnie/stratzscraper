@@ -68,6 +68,7 @@ def _unmark_discover_task(steam_account_id: int) -> None:
                 """
                 UPDATE players
                 SET discover_done=FALSE,
+                    full_write_done=FALSE,
                     assigned_to=NULL,
                     assigned_at=NULL
                 WHERE steamAccountId=%s
@@ -414,6 +415,15 @@ def process_discover_submission(
                 )
                 conn.commit()
             with conn.cursor() as cur:
+                retryable_execute(
+                    cur,
+                    """
+                    UPDATE players
+                    SET full_write_done=TRUE
+                    WHERE steamAccountId=%s
+                    """,
+                    (steam_account_id,),
+                )
                 retryable_execute(
                     cur,
                     """

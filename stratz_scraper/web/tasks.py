@@ -50,6 +50,7 @@ def _reset_discover_task(cur, steam_account_id: int) -> int:
         """
         UPDATE players
         SET discover_done=FALSE,
+            full_write_done=FALSE,
             assigned_to=NULL,
             assigned_at=NULL
         WHERE steamAccountId=%s

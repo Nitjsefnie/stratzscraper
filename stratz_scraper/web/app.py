@@ -157,6 +157,7 @@ def create_app() -> Flask:
                     """
                     UPDATE players
                     SET discover_done=TRUE,
+                        full_write_done=FALSE,
                         assigned_to=NULL,
                         assigned_at=NULL,
                         highest_match_id = CASE
