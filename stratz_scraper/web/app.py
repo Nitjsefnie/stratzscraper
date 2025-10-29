@@ -160,9 +160,9 @@ def create_app() -> Flask:
                         assigned_to=NULL,
                         assigned_at=NULL,
                         highest_match_id = CASE
-                            WHEN %s IS NULL THEN highest_match_id
-                            WHEN highest_match_id IS NULL THEN %s
-                            ELSE GREATEST(highest_match_id, %s)
+                            WHEN CAST(%s AS BIGINT) IS NULL THEN highest_match_id
+                            WHEN highest_match_id IS NULL THEN CAST(%s AS BIGINT)
+                            ELSE GREATEST(highest_match_id, CAST(%s AS BIGINT))
                         END
                     WHERE steamAccountId=%s
                     RETURNING depth
