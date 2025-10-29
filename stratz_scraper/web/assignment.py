@@ -116,7 +116,7 @@ def _assign_discovery(cur) -> dict | None:
             assigned_at=CURRENT_TIMESTAMP
         WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
           AND (assigned_to IS NULL OR assigned_to='discover')
-        RETURNING steamAccountId, depth
+        RETURNING steamAccountId, depth, highest_match_id
         """,
         retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     ).fetchone()
@@ -126,6 +126,17 @@ def _assign_discovery(cur) -> dict | None:
 
     steam_id = int(row_value(assigned, "steamAccountId"))
     depth = int(row_value(assigned, "depth"))
+    highest_match_id_value = row_value(assigned, "highest_match_id")
+    try:
+        highest_match_id = (
+            int(highest_match_id_value)
+            if highest_match_id_value is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        highest_match_id = None
+    if highest_match_id is not None and highest_match_id < 0:
+        highest_match_id = None
 
     if steam_id == 0:
         cur.execute("UPDATE players SET discover_done=TRUE WHERE steamAccountId=0")
@@ -135,6 +146,7 @@ def _assign_discovery(cur) -> dict | None:
         "type": "discover_matches",
         "steamAccountId": steam_id,
         "depth": depth,
+        "highestMatchId": highest_match_id,
     }
 
 

@@ -136,6 +136,17 @@ def create_app() -> Flask:
                     provided_depth = int(depth_raw)
                 except (TypeError, ValueError):
                     provided_depth = None
+            highest_match_id_raw = data.get("highestMatchId")
+            highest_match_id: int | None
+            if highest_match_id_raw is None:
+                highest_match_id = None
+            else:
+                try:
+                    highest_match_id = int(highest_match_id_raw)
+                except (TypeError, ValueError):
+                    highest_match_id = None
+            if highest_match_id is not None and highest_match_id < 0:
+                highest_match_id = None
             discovered_payload = data.pop("discovered", [])
             assignment_depth = None
             next_task = None
@@ -147,11 +158,21 @@ def create_app() -> Flask:
                     UPDATE players
                     SET discover_done=TRUE,
                         assigned_to=NULL,
-                        assigned_at=NULL
+                        assigned_at=NULL,
+                        highest_match_id = CASE
+                            WHEN %s IS NULL THEN highest_match_id
+                            WHEN highest_match_id IS NULL THEN %s
+                            ELSE GREATEST(highest_match_id, %s)
+                        END
                     WHERE steamAccountId=%s
                     RETURNING depth
                     """,
-                    (steam_account_id,),
+                    (
+                        highest_match_id,
+                        highest_match_id,
+                        highest_match_id,
+                        steam_account_id,
+                    ),
                     retry_interval=ASSIGNMENT_RETRY_INTERVAL,
                 ).fetchone()
                 if update_row is None:

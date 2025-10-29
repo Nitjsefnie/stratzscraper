@@ -293,8 +293,15 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                     assigned_at TIMESTAMPTZ,
                     hero_refreshed_at TIMESTAMPTZ,
                     hero_done BOOLEAN DEFAULT FALSE,
+                    highest_match_id BIGINT,
                     discover_done BOOLEAN DEFAULT FALSE
                 )
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE players
+                ADD COLUMN IF NOT EXISTS highest_match_id BIGINT
                 """
             )
             cur.execute(

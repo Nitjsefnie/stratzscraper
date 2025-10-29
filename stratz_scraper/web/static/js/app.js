@@ -1441,10 +1441,29 @@ async function fetchPlayerHeroes(playerId, token) {
   }));
 }
 
-async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
+async function discoverMatches(
+  playerId,
+  token,
+  { take = 100, skip = 0, stopAtMatchId = null } = {},
+) {
   const pageSizeCandidate = Number.isFinite(take) && take > 0 ? Math.floor(take) : 100;
   const pageSize = Math.max(1, pageSizeCandidate);
   const startingSkip = Number.isFinite(skip) && skip > 0 ? Math.floor(skip) : 0;
+  const stopAtCandidate =
+    Number.isFinite(stopAtMatchId) && stopAtMatchId > 0
+      ? Math.floor(stopAtMatchId)
+      : null;
+
+  const playerIdCandidate =
+    typeof playerId === "number"
+      ? playerId
+      : typeof playerId === "string"
+        ? Number.parseInt(playerId, 10)
+        : null;
+  const normalizedPlayerId =
+    Number.isFinite(playerIdCandidate) && playerIdCandidate > 0
+      ? Math.trunc(playerIdCandidate)
+      : null;
 
   const query = `
     query PlayerMatches($steamAccountId: Long!, $take: Int!, $skip: Int!) {
@@ -1461,6 +1480,7 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
 
   const discovered = new Map();
   let nextSkip = startingSkip;
+  let highestMatchId = null;
 
   while (true) {
     const payload = await executeStratzQuery(
@@ -1474,37 +1494,70 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
       break;
     }
 
-    matches.forEach((match) => {
-      if (!Array.isArray(match?.players)) {
-        return;
+    let shouldStop = false;
+    for (const match of matches) {
+      const rawMatchId = match?.id;
+      const parsedMatchId =
+        typeof rawMatchId === "number"
+          ? rawMatchId
+          : typeof rawMatchId === "string"
+            ? Number.parseInt(rawMatchId, 10)
+            : null;
+      const matchId = Number.isFinite(parsedMatchId) ? Math.trunc(parsedMatchId) : null;
+      if (matchId !== null) {
+        if (stopAtCandidate !== null && matchId <= stopAtCandidate) {
+          shouldStop = true;
+          break;
+        }
+        highestMatchId =
+          highestMatchId === null ? matchId : Math.max(highestMatchId, matchId);
       }
-      match.players.forEach((participant) => {
+
+      if (!Array.isArray(match?.players)) {
+        continue;
+      }
+
+      for (const participant of match.players) {
         const rawId = participant?.steamAccountId;
-        const id =
+        const candidateId =
           typeof rawId === "number"
             ? rawId
             : typeof rawId === "string"
               ? Number.parseInt(rawId, 10)
               : null;
-        if (Number.isFinite(id) && id !== playerId) {
-          const previous = discovered.get(id) ?? 0;
-          discovered.set(id, previous + 1);
+        const normalizedId =
+          Number.isFinite(candidateId) && candidateId > 0
+            ? Math.trunc(candidateId)
+            : null;
+        if (
+          normalizedId !== null &&
+          (normalizedPlayerId === null || normalizedId !== normalizedPlayerId)
+        ) {
+          const previous = discovered.get(normalizedId) ?? 0;
+          discovered.set(normalizedId, previous + 1);
         }
-      });
-    });
+      }
+    }
+
+    if (shouldStop) {
+      break;
+    }
 
     if (matches.length < pageSize) {
       break;
     }
 
     nextSkip += matches.length;
-    await new Promise(r => setTimeout(r, 500));
+    await delay(500);
   }
 
-  return Array.from(discovered, ([steamAccountId, count]) => ({
-    steamAccountId,
-    count,
-  }));
+  return {
+    discovered: Array.from(discovered, ([steamAccountId, count]) => ({
+      steamAccountId,
+      count,
+    })),
+    highestMatchId,
+  };
 }
 
 async function submitHeroStats(playerId, heroes) {
@@ -1525,7 +1578,7 @@ async function submitHeroStats(playerId, heroes) {
   return payload?.task ?? null;
 }
 
-async function submitDiscovery(playerId, discovered, depth) {
+async function submitDiscovery(playerId, discovered, depth, highestMatchId = null) {
   const payload = {
     type: "discover_matches",
     steamAccountId: playerId,
@@ -1535,6 +1588,11 @@ async function submitDiscovery(playerId, discovered, depth) {
   if (Number.isFinite(depth)) {
     payload.depth = depth;
   }
+  let normalizedHighest = null;
+  if (Number.isFinite(highestMatchId)) {
+    normalizedHighest = Math.max(0, Math.trunc(highestMatchId));
+  }
+  payload.highestMatchId = normalizedHighest;
   const response = await fetch("/submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1750,12 +1808,28 @@ async function workLoopForToken(token) {
           token,
           `Discovery task for ${taskId} (depth ${task.depth ?? 0}).`,
         );
-        const discovered = await discoverMatches(taskId, token.activeToken);
+        const discoveryResult = await discoverMatches(taskId, token.activeToken, {
+          stopAtMatchId: task.highestMatchId,
+        });
+        const discovered = Array.isArray(discoveryResult?.discovered)
+          ? discoveryResult.discovered
+          : [];
+        const highestMatchId = discoveryResult?.highestMatchId ?? null;
         logToken(
           token,
           `Discovered ${discovered.length} accounts from ${taskId}.`,
         );
-        nextTask = await submitDiscovery(taskId, discovered, task.depth);
+        const submissionHighestMatchId = Number.isFinite(highestMatchId)
+          ? highestMatchId
+          : Number.isFinite(task?.highestMatchId)
+            ? Math.trunc(task.highestMatchId)
+            : null;
+        nextTask = await submitDiscovery(
+          taskId,
+          discovered,
+          task.depth,
+          submissionHighestMatchId,
+        );
         logToken(token, `Submitted discovery results for ${taskId}.`);
       } else {
         logToken(
