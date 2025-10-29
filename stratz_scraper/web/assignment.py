@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Final
 
 from ..database import (
     db_connection,
@@ -19,6 +20,15 @@ ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 ASSIGNMENT_RETRY_INTERVAL = 0.05
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _DiscoveryThrottle:
+    """Sentinel object returned when discovery assignment is throttled."""
+
+    __slots__ = ()
+
+
+_DISCOVERY_THROTTLED: Final = _DiscoveryThrottle()
 
 _cleanup_thread: threading.Thread | None = None
 _cleanup_stop_event: threading.Event | None = None
@@ -116,9 +126,9 @@ def _discovery_backlog_exceeded(cur) -> bool:
     return backlog_count > 100
 
 
-def _assign_discovery(cur) -> dict | None:
+def _assign_discovery(cur) -> dict | _DiscoveryThrottle | None:
     if _discovery_backlog_exceeded(cur):
-        return None
+        return _DISCOVERY_THROTTLED
 
     assigned = retryable_execute(
         cur,
@@ -311,10 +321,18 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
 
             candidate_payload = None
 
+            throttled_discovery = False
+
             if discovery_due:
                 candidate_payload = _assign_discovery(cur)
-                if candidate_payload is None and _restart_discovery_cycle(cur):
+                if candidate_payload is _DISCOVERY_THROTTLED:
+                    throttled_discovery = True
+                    candidate_payload = None
+                elif candidate_payload is None and _restart_discovery_cycle(cur):
                     candidate_payload = _assign_discovery(cur)
+                    if candidate_payload is _DISCOVERY_THROTTLED:
+                        throttled_discovery = True
+                        candidate_payload = None
 
             if candidate_payload is None and refresh_due:
                 assigned_row = retryable_execute(
@@ -364,13 +382,16 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                 ).fetchone()
                 if not hero_pending and not discovery_due:
                     candidate_payload = _assign_discovery(cur)
+                    if candidate_payload is _DISCOVERY_THROTTLED:
+                        throttled_discovery = True
+                        candidate_payload = None
 
             if candidate_payload is not None:
                 _increment_assignment_counter(cur)
                 task_payload = candidate_payload
                 break
 
-            if refresh_due or discovery_due:
+            if refresh_due or discovery_due or throttled_discovery:
                 break
 
             loop_count = next_count
