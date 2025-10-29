@@ -33,7 +33,7 @@ DATABASE_URL = _build_database_url()
 
 _THREAD_LOCAL = threading.local()
 _SCHEMA_INITIALIZED = False
-_SCHEMA_ADVISORY_LOCK_ID = 0x73747261747A5343  # "stratzSC" in hex
+_SCHEMA_ADVISORY_LOCK_ID = 0x73747261747A5343  # "stratzSC"
 
 _RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     errors.DeadlockDetected,
@@ -53,7 +53,7 @@ def row_value(row: Mapping[str, object] | object, key: str) -> object:
 
     if isinstance(row, Mapping):
         mapping = row
-    else:  # pragma: no cover - defensive for unexpected row types
+    else:  # pragma: no cover
         mapping = dict(row)
 
     for candidate in (key, key.lower(), key.upper()):
@@ -298,9 +298,6 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 """
             )
             cur.execute(
-                "ALTER TABLE players DROP COLUMN IF EXISTS seen_count"
-            )
-            cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hero_stats (
                     steamAccountId BIGINT,
@@ -370,9 +367,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                 """
             )
             cur.execute(
-                "DROP INDEX IF EXISTS idx_players_discover_assignment_noncol"
-            )
-            cur.execute(
                 """
                 -- stratz_scraper.web.assignment._assign_discovery
                 CREATE INDEX IF NOT EXISTS idx_players_discover_assignment_noncol
@@ -387,9 +381,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                       AND discover_done=FALSE
                       AND (assigned_to IS NULL OR assigned_to='discover')
                 """
-            )
-            cur.execute(
-                "DROP INDEX IF EXISTS idx_players_hero_refresh_queue"
             )
             cur.execute(
                 """

@@ -120,12 +120,21 @@ def _assign_discovery(cur) -> dict | None:
         """,
         retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     ).fetchone()
+
     if not assigned:
         return None
+
+    steam_id = int(row_value(assigned, "steamAccountId"))
+    depth = int(row_value(assigned, "depth"))
+
+    if steam_id == 0:
+        cur.execute("UPDATE players SET discover_done=TRUE WHERE steamAccountId=0")
+        return _assign_discovery(cur)
+
     return {
         "type": "discover_matches",
-        "steamAccountId": int(row_value(assigned, "steamAccountId")),
-        "depth": int(row_value(assigned, "depth")),
+        "steamAccountId": steam_id,
+        "depth": depth,
     }
 
 
