@@ -301,18 +301,6 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
             )
             cur.execute(
                 """
-                ALTER TABLE players
-                ADD COLUMN IF NOT EXISTS highest_match_id BIGINT
-                """
-            )
-            cur.execute(
-                """
-                ALTER TABLE players
-                ADD COLUMN IF NOT EXISTS full_write_done BOOLEAN DEFAULT FALSE
-                """
-            )
-            cur.execute(
-                """
                 CREATE TABLE IF NOT EXISTS hero_stats (
                     steamAccountId BIGINT,
                     heroId INTEGER,
@@ -372,6 +360,18 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
         close_after = True
     try:
         with existing.cursor() as cur:
+            # Retire obsolete indexes before creating the current set. This keeps the
+            # schema lean without leaving behind redundant definitions.
+            cur.execute(
+                """
+                DROP INDEX IF EXISTS idx_players_discover_assignment_noncol
+                """
+            )
+            cur.execute(
+                """
+                DROP INDEX IF EXISTS idx_meta_key
+                """
+            )
             cur.execute(
                 """
                 -- stratz_scraper.web.assignment hero assignment lookups
@@ -383,17 +383,14 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             cur.execute(
                 """
                 -- stratz_scraper.web.assignment._assign_discovery
-                CREATE INDEX IF NOT EXISTS idx_players_discover_assignment_noncol
+                CREATE INDEX IF NOT EXISTS idx_players_discover_queue
                     ON players (
-                        hero_done,
-                        discover_done,
-                        (assigned_to IS NOT NULL),
-                        depth,
-                        steamAccountId
+                        depth ASC,
+                        steamAccountId ASC
                     )
                     WHERE hero_done=TRUE
                       AND discover_done=FALSE
-                      AND (assigned_to IS NULL OR assigned_to='discover')
+                      AND assigned_to IS NULL
                 """
             )
             cur.execute(
@@ -425,13 +422,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                         assigned_at
                     )
                     WHERE assigned_to IS NOT NULL
-                """
-            )
-            cur.execute(
-                """
-                -- meta lookups throughout the scheduler (e.g. assignment cursor updates)
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_key
-                    ON meta (key)
                 """
             )
             # ``hero_top100`` tops out at roughly 20k rows (100 players per hero)
