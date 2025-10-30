@@ -1428,8 +1428,28 @@ async function fetchPlayerHeroes(playerId, token) {
     throw error;
   }
 
-  const data = await response.json();
-  const heroes = data?.data?.player?.heroesPerformance;
+  const payload = await response.json();
+  const graphQLErrors = Array.isArray(payload?.errors) ? payload.errors : [];
+  if (graphQLErrors.length > 0) {
+    const errorMessages = graphQLErrors
+      .map((graphQLError) =>
+        typeof graphQLError?.message === "string"
+          ? graphQLError.message.trim()
+          : "",
+      )
+      .filter((message) => message.length > 0);
+    const combinedMessage =
+      errorMessages.length > 0
+        ? errorMessages.join("; ")
+        : "Unknown GraphQL error";
+    const error = new Error(
+      `Stratz API returned GraphQL errors: ${combinedMessage}`,
+    );
+    error.graphQLErrors = graphQLErrors;
+    throw error;
+  }
+
+  const heroes = payload?.data?.player?.heroesPerformance;
   if (!Array.isArray(heroes)) {
     return [];
   }
