@@ -33,7 +33,7 @@ DATABASE_URL = _build_database_url()
 
 _THREAD_LOCAL = threading.local()
 _SCHEMA_INITIALIZED = False
-_SCHEMA_ADVISORY_LOCK_ID = 0x73747261747A5343  # "stratzSC"
+_SCHEMA_ADVISORY_LOCK_ID = int.from_bytes(b"stratzSC", "big")
 
 _RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     errors.DeadlockDetected,

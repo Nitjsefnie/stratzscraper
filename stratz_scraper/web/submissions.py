@@ -15,8 +15,8 @@ from ..database import (
 )
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=1)
-_DISCOVERY_SUBMISSION_LOCK_ID = 0x646973636f766572  # "discover"
-_DISCOVERY_BATCH_SIZE = 200
+_DISCOVERY_SUBMISSION_LOCK_ID = int.from_bytes(b"discover", "big")
+_DISCOVERY_BATCH_SIZE = 50
 
 __all__ = [
     "BACKGROUND_EXECUTOR",

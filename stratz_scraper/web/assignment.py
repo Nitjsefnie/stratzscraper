@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Final
 
@@ -33,6 +34,9 @@ _DISCOVERY_THROTTLED: Final = _DiscoveryThrottle()
 _cleanup_thread: threading.Thread | None = None
 _cleanup_stop_event: threading.Event | None = None
 _cleanup_lock = threading.Lock()
+
+_restart_executor = ThreadPoolExecutor(max_workers=1)
+_RESTART_LOCK_ID = int.from_bytes(b"restart", "big")
 
 __all__ = [
     "ASSIGNMENT_CLEANUP_INTERVAL",
@@ -184,21 +188,26 @@ def _assign_discovery(cur) -> dict | _DiscoveryThrottle | None:
         "highestMatchId": highest_match_id,
     }
 
-
 def _restart_discovery_cycle(cur) -> bool:
-    retryable_execute(
-        cur,
-        """
-        UPDATE players
-        SET discover_done=FALSE,
-            full_write_done=FALSE,
-            assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
-            assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
-        """,
-        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-    )
-    return True
+    cur.execute(f"SELECT pg_try_advisory_xact_lock({_RESTART_LOCK_ID})")
+    if not cur.fetchone()[0]:
+        return True
 
+    def _task():
+        retryable_execute(
+            cur,
+            """
+            UPDATE players
+            SET discover_done=FALSE,
+                full_write_done=FALSE,
+                assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
+                assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
+            """,
+            retry_interval=ASSIGNMENT_RETRY_INTERVAL,
+        )
+
+    _restart_executor.submit(_task)
+    return True
 
 def _assign_next_hero(cur) -> dict | None:
     last_cursor_row = retryable_execute(
@@ -317,22 +326,20 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
         while True:
             next_count = loop_count + 1
             refresh_due = next_count % 11 == 0
-            discovery_due = next_count % 1999 == 0
+            discovery_due = next_count % 199 == 0
 
             candidate_payload = None
-
-            throttled_discovery = False
 
             if discovery_due:
                 candidate_payload = _assign_discovery(cur)
                 if candidate_payload is _DISCOVERY_THROTTLED:
-                    throttled_discovery = True
-                    candidate_payload = None
-                elif candidate_payload is None and _restart_discovery_cycle(cur):
-                    candidate_payload = _assign_discovery(cur)
-                    if candidate_payload is _DISCOVERY_THROTTLED:
-                        throttled_discovery = True
-                        candidate_payload = None
+                    loop_count = next_count
+                    continue
+
+                if candidate_payload is None:
+                    _restart_discovery_cycle(cur)
+                    loop_count = next_count
+                    continue
 
             if candidate_payload is None and refresh_due:
                 assigned_row = retryable_execute(
@@ -383,15 +390,15 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                 if not hero_pending and not discovery_due:
                     candidate_payload = _assign_discovery(cur)
                     if candidate_payload is _DISCOVERY_THROTTLED:
-                        throttled_discovery = True
-                        candidate_payload = None
+                        loop_count = next_count
+                        continue
 
             if candidate_payload is not None:
                 _increment_assignment_counter(cur)
                 task_payload = candidate_payload
                 break
 
-            if refresh_due or discovery_due or throttled_discovery:
+            if refresh_due or discovery_due:
                 break
 
             loop_count = next_count

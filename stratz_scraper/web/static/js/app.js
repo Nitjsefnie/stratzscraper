@@ -1780,8 +1780,8 @@ async function workLoopForToken(token) {
         task = await getTask();
       }
       if (!task) {
-        const wait = 60_000;
-        logToken(token, "No tasks available. Waiting 60 seconds before retrying.");
+        const wait = 5_000;
+        logToken(token, "No tasks available. Waiting 5 seconds before retrying.");
         token.backoff = wait;
         updateBackoffDisplay();
         updateTokenDisplay(token);
