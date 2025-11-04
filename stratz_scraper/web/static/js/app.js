@@ -266,6 +266,20 @@ function getTokenMeta(tokenValue) {
   };
 }
 
+function getTokenExpiryMs(meta) {
+  if (!meta || !Number.isFinite(meta.expiresAt)) {
+    return null;
+  }
+
+  const expiresAt = meta.expiresAt;
+  const expiryMs = expiresAt > 1e12 ? expiresAt : expiresAt * 1000;
+  if (!Number.isFinite(expiryMs)) {
+    return null;
+  }
+
+  return expiryMs;
+}
+
 function compareTokenFreshness(newMeta, existingMeta) {
   if (!newMeta || !existingMeta) {
     return "unknown";
@@ -564,6 +578,39 @@ function formatJwtTimestamp(value) {
   }
 
   return date.toLocaleString();
+}
+
+function maybeRemoveExpiredToken(token) {
+  if (!token) {
+    return false;
+  }
+
+  const rawValue = typeof token.value === "string" ? token.value.trim() : "";
+  if (!rawValue) {
+    return false;
+  }
+
+  const meta = getTokenMeta(rawValue);
+  const expiryMs = getTokenExpiryMs(meta);
+  if (expiryMs === null || expiryMs > Date.now()) {
+    return false;
+  }
+
+  const expiryText = formatJwtTimestamp(meta?.expiresAt);
+  const suffix = expiryText !== "—" ? ` (expired ${expiryText})` : "";
+  logToken(token, `Token appears to have expired${suffix}. Removing token.`);
+
+  if (typeof token.lastStartMs === "number") {
+    token.totalRuntimeMs += Math.max(0, getNowMs() - token.lastStartMs);
+    token.lastStartMs = null;
+  }
+
+  token.stopRequested = true;
+  token.running = false;
+  token.activeToken = null;
+  token.removed = true;
+  removeToken(token.id);
+  return true;
 }
 
 function updateTokenSummary() {
@@ -1050,6 +1097,7 @@ function removeToken(id) {
   if (token) {
     token.running = false;
     token.dom = null;
+    token.removed = true;
   }
   renderTokens();
   persistTokens();
@@ -1116,6 +1164,7 @@ function addTokenRow(initial = {}, options = {}) {
     completedTasks: 0,
     expanded: Boolean(initial.expanded),
     displayIndex: state.tokens.length + 1,
+    removed: false,
   };
   state.tokens.push(token);
   if (!options.fromStorage) {
@@ -1911,6 +1960,9 @@ async function workLoopForToken(token) {
         }
       }
       task = null;
+      if (hadTask && maybeRemoveExpiredToken(token)) {
+        break;
+      }
       if (!hadTask) {
         const wait = 60_000;
         token.backoff = wait;
@@ -1941,6 +1993,10 @@ async function workLoopForToken(token) {
         }
       }
     }
+  }
+
+  if (token.removed) {
+    return;
   }
 
   if (typeof token.lastStartMs === "number") {
