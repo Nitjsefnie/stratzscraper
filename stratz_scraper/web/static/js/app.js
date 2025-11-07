@@ -182,6 +182,52 @@ function getTaskSteamAccountIds(task) {
   return ids;
 }
 
+function getDiscoveryTaskPlayers(task) {
+  if (!task || typeof task !== "object") {
+    return [];
+  }
+
+  const ids = getTaskSteamAccountIds(task);
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const playersPayload = Array.isArray(task.players) ? task.players : [];
+  const playersById = new Map();
+  playersPayload.forEach((player) => {
+    if (!player || typeof player !== "object") {
+      return;
+    }
+    const normalizedId = normalizeSteamAccountId(player.steamAccountId);
+    if (normalizedId !== null && !playersById.has(normalizedId)) {
+      playersById.set(normalizedId, player);
+    }
+  });
+
+  const fallbackDepth = Number.isFinite(task.depth) ? Math.trunc(task.depth) : null;
+  const fallbackHighest = Number.isFinite(task.highestMatchId)
+    ? Math.trunc(task.highestMatchId)
+    : null;
+
+  const players = [];
+  ids.forEach((id) => {
+    const playerData = playersById.get(id) ?? null;
+    const depthCandidate = Number.isFinite(playerData?.depth)
+      ? Math.trunc(playerData.depth)
+      : fallbackDepth;
+    const highestCandidate = Number.isFinite(playerData?.highestMatchId)
+      ? Math.trunc(playerData.highestMatchId)
+      : fallbackHighest;
+    players.push({
+      steamAccountId: id,
+      depth: depthCandidate,
+      highestMatchId: highestCandidate,
+    });
+  });
+
+  return players;
+}
+
 function formatTaskIdLabel(task) {
   const ids = getTaskSteamAccountIds(task);
   if (ids.length === 0) {
@@ -1602,32 +1648,61 @@ async function fetchPlayerHeroes(playerIds, token) {
 }
 
 async function discoverMatches(
-  playerId,
+  players,
   token,
   { take = 100, skip = 0, stopAtMatchId = null } = {},
 ) {
   const pageSizeCandidate = Number.isFinite(take) && take > 0 ? Math.floor(take) : 100;
   const pageSize = Math.max(1, pageSizeCandidate);
   const startingSkip = Number.isFinite(skip) && skip > 0 ? Math.floor(skip) : 0;
-  const stopAtCandidate =
+  const fallbackStopAt =
     Number.isFinite(stopAtMatchId) && stopAtMatchId > 0
       ? Math.floor(stopAtMatchId)
       : null;
 
-  const playerIdCandidate =
-    typeof playerId === "number"
-      ? playerId
-      : typeof playerId === "string"
-        ? Number.parseInt(playerId, 10)
+  const providedEntries = Array.isArray(players) ? players : [players];
+  const normalizedEntries = [];
+  const seen = new Set();
+  for (const entry of providedEntries) {
+    if (entry === null || entry === undefined) {
+      continue;
+    }
+    const rawId =
+      typeof entry === "object" && entry !== null ? entry.steamAccountId ?? entry.id : entry;
+    const normalizedId = normalizeSteamAccountId(rawId);
+    if (normalizedId === null || seen.has(normalizedId)) {
+      continue;
+    }
+    const parsedId = Number.parseInt(normalizedId, 10);
+    if (!Number.isFinite(parsedId) || parsedId <= 0) {
+      continue;
+    }
+    const stopAtCandidate =
+      typeof entry === "object" && entry !== null
+        ? entry.stopAtMatchId ?? entry.highestMatchId ?? fallbackStopAt
+        : fallbackStopAt;
+    const normalizedStopAt =
+      Number.isFinite(stopAtCandidate) && stopAtCandidate > 0
+        ? Math.floor(stopAtCandidate)
         : null;
-  const normalizedPlayerId =
-    Number.isFinite(playerIdCandidate) && playerIdCandidate > 0
-      ? Math.trunc(playerIdCandidate)
-      : null;
+    normalizedEntries.push({
+      id: normalizedId,
+      numericId: Math.trunc(parsedId),
+      stopAt: normalizedStopAt,
+    });
+    seen.add(normalizedId);
+    if (normalizedEntries.length >= 5) {
+      break;
+    }
+  }
+
+  if (normalizedEntries.length === 0) {
+    return [];
+  }
 
   const query = `
-    query PlayerMatches($steamAccountId: Long!, $take: Int!, $skip: Int!) {
-      player(steamAccountId: $steamAccountId) {
+    query matches($ids: [Long]!, $take:Int!, $skip:Int!) {
+      players(steamAccountIds: $ids) {
         matches(request: { take: $take, skip: $skip }) {
           id
           players {
@@ -1638,86 +1713,113 @@ async function discoverMatches(
     }
   `;
 
-  const discovered = new Map();
-  let nextSkip = startingSkip;
-  let highestMatchId = null;
+  const stateById = new Map();
+  normalizedEntries.forEach((entry) => {
+    stateById.set(entry.id, { discovered: new Map(), highestMatchId: null });
+  });
 
-  while (true) {
+  let activeEntries = normalizedEntries.slice();
+  let nextSkip = startingSkip;
+
+  while (activeEntries.length > 0) {
+    const idsForQuery = activeEntries.map((entry) => entry.numericId);
     const payload = await executeStratzQuery(
       query,
-      { steamAccountId: playerId, take: pageSize, skip: nextSkip },
+      { ids: idsForQuery, take: pageSize, skip: nextSkip },
       token,
     );
 
-    const matches = payload?.data?.player?.matches;
-    if (!Array.isArray(matches) || matches.length === 0) {
-      break;
-    }
+    const playersPayload = Array.isArray(payload?.data?.players)
+      ? payload.data.players
+      : [];
+    const finishedIds = new Set();
 
-    let shouldStop = false;
-    for (const match of matches) {
-      const rawMatchId = match?.id;
-      const parsedMatchId =
-        typeof rawMatchId === "number"
-          ? rawMatchId
-          : typeof rawMatchId === "string"
-            ? Number.parseInt(rawMatchId, 10)
-            : null;
-      const matchId = Number.isFinite(parsedMatchId) ? Math.trunc(parsedMatchId) : null;
-      if (matchId !== null) {
-        if (stopAtCandidate !== null && matchId <= stopAtCandidate) {
-          shouldStop = true;
-          break;
-        }
-        highestMatchId =
-          highestMatchId === null ? matchId : Math.max(highestMatchId, matchId);
-      }
-
-      if (!Array.isArray(match?.players)) {
+    for (let index = 0; index < activeEntries.length; index += 1) {
+      const entry = activeEntries[index];
+      const currentState = stateById.get(entry.id);
+      if (!currentState) {
+        finishedIds.add(entry.id);
         continue;
       }
 
-      for (const participant of match.players) {
-        const rawId = participant?.steamAccountId;
-        const candidateId =
-          typeof rawId === "number"
-            ? rawId
-            : typeof rawId === "string"
-              ? Number.parseInt(rawId, 10)
+      const playerPayload = playersPayload[index] ?? null;
+      const matches = Array.isArray(playerPayload?.matches) ? playerPayload.matches : [];
+      if (matches.length === 0) {
+        finishedIds.add(entry.id);
+        continue;
+      }
+
+      let shouldStop = false;
+      for (const match of matches) {
+        const rawMatchId = match?.id;
+        const parsedMatchId =
+          typeof rawMatchId === "number"
+            ? rawMatchId
+            : typeof rawMatchId === "string"
+              ? Number.parseInt(rawMatchId, 10)
               : null;
-        const normalizedId =
-          Number.isFinite(candidateId) && candidateId > 0
-            ? Math.trunc(candidateId)
-            : null;
-        if (
-          normalizedId !== null &&
-          (normalizedPlayerId === null || normalizedId !== normalizedPlayerId)
-        ) {
-          const previous = discovered.get(normalizedId) ?? 0;
-          discovered.set(normalizedId, previous + 1);
+        const matchId = Number.isFinite(parsedMatchId) ? Math.trunc(parsedMatchId) : null;
+        if (matchId !== null) {
+          if (entry.stopAt !== null && matchId <= entry.stopAt) {
+            shouldStop = true;
+            break;
+          }
+          const previousHighest = currentState.highestMatchId;
+          currentState.highestMatchId =
+            previousHighest === null ? matchId : Math.max(previousHighest, matchId);
         }
+
+        const participants = Array.isArray(match?.players) ? match.players : [];
+        for (const participant of participants) {
+          const rawParticipantId = participant?.steamAccountId;
+          const parsedParticipantId =
+            typeof rawParticipantId === "number"
+              ? rawParticipantId
+              : typeof rawParticipantId === "string"
+                ? Number.parseInt(rawParticipantId, 10)
+                : null;
+          const normalizedParticipantId =
+            Number.isFinite(parsedParticipantId) && parsedParticipantId > 0
+              ? Math.trunc(parsedParticipantId)
+              : null;
+          if (
+            normalizedParticipantId !== null &&
+            normalizedParticipantId !== entry.numericId
+          ) {
+            const previous = currentState.discovered.get(normalizedParticipantId) ?? 0;
+            currentState.discovered.set(normalizedParticipantId, previous + 1);
+          }
+        }
+      }
+
+      if (shouldStop || matches.length < pageSize) {
+        finishedIds.add(entry.id);
       }
     }
 
-    if (shouldStop) {
+    activeEntries = activeEntries.filter((entry) => !finishedIds.has(entry.id));
+    if (activeEntries.length === 0) {
       break;
     }
 
-    if (matches.length < pageSize) {
-      break;
-    }
-
-    nextSkip += matches.length;
+    nextSkip += pageSize;
     await delay(500);
   }
 
-  return {
-    discovered: Array.from(discovered, ([steamAccountId, count]) => ({
-      steamAccountId,
-      count,
-    })),
-    highestMatchId,
-  };
+  return normalizedEntries.map((entry) => {
+    const currentState = stateById.get(entry.id);
+    const discoveredEntries = currentState
+      ? Array.from(currentState.discovered, ([steamAccountId, count]) => ({
+          steamAccountId,
+          count,
+        }))
+      : [];
+    return {
+      steamAccountId: entry.numericId,
+      discovered: discoveredEntries,
+      highestMatchId: currentState?.highestMatchId ?? null,
+    };
+  });
 }
 
 async function submitHeroStats(players) {
@@ -1769,13 +1871,23 @@ async function submitHeroStats(players) {
   return responsePayload?.task ?? null;
 }
 
-async function submitDiscovery(playerId, discovered, depth, highestMatchId = null) {
+async function submitDiscovery(
+  playerId,
+  discovered,
+  depth,
+  highestMatchId = null,
+  requestNextTask = true,
+) {
   const payload = {
     type: "discover_matches",
     steamAccountId: playerId,
     discovered,
-    task: true,
   };
+  if (requestNextTask === true) {
+    payload.task = true;
+  } else {
+    payload.task = false;
+  }
   if (Number.isFinite(depth)) {
     payload.depth = depth;
   }
@@ -1793,7 +1905,10 @@ async function submitDiscovery(playerId, discovered, depth, highestMatchId = nul
     throw new Error(`Submit failed with status ${response.status}`);
   }
   const responsePayload = await response.json();
-  return responsePayload?.task ?? null;
+  if (requestNextTask === true) {
+    return responsePayload?.task ?? null;
+  }
+  return null;
 }
 
 const PROGRESS_REFRESH_INTERVAL = 10000;
@@ -2015,34 +2130,90 @@ async function workLoopForToken(token) {
         nextTask = await submitHeroStats(heroResults);
         logToken(token, `Submitted hero stats for ${taskLabel}.`);
       } else if (task.type === "discover_matches") {
-        const taskId = task.steamAccountId;
+        const discoveryPlayers = getDiscoveryTaskPlayers(task);
+        if (discoveryPlayers.length === 0) {
+          logToken(token, "Discovery task missing steamAccountId. Resetting task.");
+          await resetTask(task).catch(() => {});
+          break;
+        }
+
+        const discoveryLabels = discoveryPlayers
+          .map((player) => normalizeSteamAccountId(player.steamAccountId))
+          .filter((id) => id !== null)
+          .join(", ");
         logToken(
           token,
-          `Discovery task for ${taskId} (depth ${task.depth ?? 0}).`,
+          `Discovery task for ${discoveryLabels || "?"}.`,
         );
-        const discoveryResult = await discoverMatches(taskId, token.activeToken, {
-          stopAtMatchId: task.highestMatchId,
+
+        const discoveryResults = await discoverMatches(
+          discoveryPlayers.map((player) => ({
+            steamAccountId: player.steamAccountId,
+            highestMatchId: player.highestMatchId,
+          })),
+          token.activeToken,
+        );
+
+        const resultsById = new Map();
+        discoveryResults.forEach((result) => {
+          const normalizedId = normalizeSteamAccountId(result?.steamAccountId);
+          if (normalizedId !== null && !resultsById.has(normalizedId)) {
+            resultsById.set(normalizedId, result);
+          }
         });
-        const discovered = Array.isArray(discoveryResult?.discovered)
-          ? discoveryResult.discovered
-          : [];
-        const highestMatchId = discoveryResult?.highestMatchId ?? null;
-        logToken(
-          token,
-          `Discovered ${discovered.length} accounts from ${taskId}.`,
-        );
-        const submissionHighestMatchId = Number.isFinite(highestMatchId)
-          ? highestMatchId
-          : Number.isFinite(task?.highestMatchId)
-            ? Math.trunc(task.highestMatchId)
+
+        for (let index = 0; index < discoveryPlayers.length; index += 1) {
+          const player = discoveryPlayers[index];
+          const normalizedId = normalizeSteamAccountId(player.steamAccountId);
+          if (normalizedId === null) {
+            logToken(
+              token,
+              "Discovery task missing steamAccountId. Resetting task.",
+            );
+            await resetTask(task).catch(() => {});
+            nextTask = null;
+            break;
+          }
+
+          const result = resultsById.get(normalizedId) ?? null;
+          const discovered = Array.isArray(result?.discovered)
+            ? result.discovered
+            : [];
+          const resolvedHighest = Number.isFinite(result?.highestMatchId)
+            ? result.highestMatchId
+            : Number.isFinite(player.highestMatchId)
+              ? Math.trunc(player.highestMatchId)
+              : Number.isFinite(task?.highestMatchId)
+                ? Math.trunc(task.highestMatchId)
+                : null;
+
+          logToken(
+            token,
+            `Discovered ${discovered.length} accounts from ${normalizedId}.`,
+          );
+
+          const requestNextTask = index === discoveryPlayers.length - 1;
+          const submissionHighestMatchId = Number.isFinite(resolvedHighest)
+            ? Math.trunc(resolvedHighest)
             : null;
-        nextTask = await submitDiscovery(
-          taskId,
-          discovered,
-          task.depth,
-          submissionHighestMatchId,
-        );
-        logToken(token, `Submitted discovery results for ${taskId}.`);
+          const depthValue = Number.isFinite(player.depth)
+            ? Math.trunc(player.depth)
+            : Number.isFinite(task.depth)
+              ? Math.trunc(task.depth)
+              : null;
+
+          const submissionResult = await submitDiscovery(
+            normalizedId,
+            discovered,
+            depthValue,
+            submissionHighestMatchId,
+            requestNextTask,
+          );
+          logToken(token, `Submitted discovery results for ${normalizedId}.`);
+          if (requestNextTask) {
+            nextTask = submissionResult;
+          }
+        }
       } else {
         logToken(
           token,

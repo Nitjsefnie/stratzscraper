@@ -20,6 +20,7 @@ HERO_ASSIGNMENT_CURSOR_KEY = "hero_assignment_cursor"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 ASSIGNMENT_RETRY_INTERVAL = 0.05
 MAX_HERO_TASK_SIZE: Final[int] = 5
+MAX_DISCOVERY_TASK_SIZE: Final[int] = 5
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,18 +136,18 @@ def _assign_discovery(cur) -> dict | _DiscoveryThrottle | None:
     if _discovery_backlog_exceeded(cur):
         return _DISCOVERY_THROTTLED
 
-    assigned = retryable_execute(
+    assigned_rows = retryable_execute(
         cur,
         """
         WITH candidate AS (
-            SELECT steamAccountId, depth
+            SELECT steamAccountId, depth, highest_match_id
             FROM players
             WHERE hero_done=TRUE
               AND discover_done=FALSE
               AND assigned_to IS NULL
             ORDER BY depth ASC,
                      steamAccountId ASC
-            LIMIT 1
+            LIMIT %s
             FOR UPDATE SKIP LOCKED
         )
         UPDATE players
@@ -156,38 +157,70 @@ def _assign_discovery(cur) -> dict | _DiscoveryThrottle | None:
           AND assigned_to IS NULL
         RETURNING steamAccountId, depth, highest_match_id
         """,
+        (MAX_DISCOVERY_TASK_SIZE,),
         retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-    ).fetchone()
+    ).fetchall()
 
-    if not assigned:
+    if not assigned_rows:
         return None
 
-    steam_id = int(row_value(assigned, "steamAccountId"))
-    depth = int(row_value(assigned, "depth"))
-    highest_match_id_value = row_value(assigned, "highest_match_id")
-    try:
-        highest_match_id = (
-            int(highest_match_id_value)
-            if highest_match_id_value is not None
-            else None
-        )
-    except (TypeError, ValueError):
-        highest_match_id = None
-    if highest_match_id is not None and highest_match_id < 0:
-        highest_match_id = None
+    players: list[dict] = []
+    for assigned in assigned_rows:
+        steam_account_id_raw = row_value(assigned, "steamAccountId")
+        try:
+            steam_account_id = int(steam_account_id_raw)
+        except (TypeError, ValueError):
+            continue
+        if steam_account_id == 0:
+            cur.execute(
+                "UPDATE players SET discover_done=TRUE, full_write_done=TRUE WHERE steamAccountId=0"
+            )
+            continue
 
-    if steam_id == 0:
-        cur.execute(
-            "UPDATE players SET discover_done=TRUE, full_write_done=TRUE WHERE steamAccountId=0"
+        depth_value = row_value(assigned, "depth")
+        try:
+            depth = int(depth_value)
+        except (TypeError, ValueError):
+            depth = None
+
+        highest_match_id_value = row_value(assigned, "highest_match_id")
+        try:
+            highest_match_id = (
+                int(highest_match_id_value)
+                if highest_match_id_value is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            highest_match_id = None
+        if highest_match_id is not None and highest_match_id < 0:
+            highest_match_id = None
+
+        players.append(
+            {
+                "steamAccountId": steam_account_id,
+                "depth": depth,
+                "highestMatchId": highest_match_id,
+            }
         )
+
+    if not players:
         return _assign_discovery(cur)
 
-    return {
+    players.sort(key=lambda entry: (entry.get("depth") or 0, entry["steamAccountId"]))
+    steam_account_ids = [player["steamAccountId"] for player in players]
+    payload = {
         "type": "discover_matches",
-        "steamAccountId": steam_id,
-        "depth": depth,
-        "highestMatchId": highest_match_id,
+        "steamAccountId": steam_account_ids[0],
+        "steamAccountIds": steam_account_ids,
+        "players": players,
     }
+    first_depth = players[0].get("depth")
+    if first_depth is not None:
+        payload["depth"] = first_depth
+    first_highest = players[0].get("highestMatchId")
+    if first_highest is not None:
+        payload["highestMatchId"] = first_highest
+    return payload
 
 def _restart_discovery_cycle(cur) -> bool:
     cur.execute(f"SELECT pg_try_advisory_xact_lock({_RESTART_LOCK_ID})")
