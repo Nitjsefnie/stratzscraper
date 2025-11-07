@@ -79,7 +79,7 @@ def reset_player_task(steam_account_id: int, task_type: Optional[str]) -> bool:
 
     with db_connection(write=True) as conn:
         cur = conn.cursor()
-        if task_type == "fetch_hero_stats":
+        if task_type in {"fetch_hero_stats", "refresh_player_data"}:
             updated = _reset_hero_task(cur, steam_account_id)
         elif task_type == "discover_matches":
             updated = _reset_discover_task(cur, steam_account_id)

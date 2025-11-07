@@ -1822,7 +1822,8 @@ async function discoverMatches(
   });
 }
 
-async function submitHeroStats(players) {
+async function submitHeroStats(players, options = {}) {
+  const { requestNextTask = true } = options;
   const normalizedPlayers = [];
   const seen = new Set();
   if (Array.isArray(players)) {
@@ -1849,7 +1850,7 @@ async function submitHeroStats(players) {
 
   const requestPayload = {
     type: "fetch_hero_stats",
-    task: true,
+    task: requestNextTask === true,
     players: normalizedPlayers,
     steamAccountIds: normalizedPlayers.map((player) => player.steamAccountId),
   };
@@ -1909,6 +1910,95 @@ async function submitDiscovery(
     return responsePayload?.task ?? null;
   }
   return null;
+}
+
+async function runDiscoveryTask(task, token, options = {}) {
+  const { requestNextTask = true, logPrefix = "Discovery" } = options;
+
+  const discoveryPlayers = getDiscoveryTaskPlayers(task);
+  if (discoveryPlayers.length === 0) {
+    logToken(token, `${logPrefix} task missing steamAccountId. Resetting task.`);
+    await resetTask(task).catch(() => {});
+    return null;
+  }
+
+  const discoveryLabels = discoveryPlayers
+    .map((player) => normalizeSteamAccountId(player.steamAccountId))
+    .filter((id) => id !== null)
+    .join(", ");
+  logToken(
+    token,
+    `${logPrefix} task for ${discoveryLabels || "?"}.`,
+  );
+
+  const discoveryResults = await discoverMatches(
+    discoveryPlayers.map((player) => ({
+      steamAccountId: player.steamAccountId,
+      highestMatchId: player.highestMatchId,
+    })),
+    token.activeToken,
+  );
+
+  const resultsById = new Map();
+  discoveryResults.forEach((result) => {
+    const normalizedId = normalizeSteamAccountId(result?.steamAccountId);
+    if (normalizedId !== null && !resultsById.has(normalizedId)) {
+      resultsById.set(normalizedId, result);
+    }
+  });
+
+  let nextTask = null;
+  for (let index = 0; index < discoveryPlayers.length; index += 1) {
+    const player = discoveryPlayers[index];
+    const normalizedId = normalizeSteamAccountId(player.steamAccountId);
+    if (normalizedId === null) {
+      logToken(
+        token,
+        `${logPrefix} task missing steamAccountId. Resetting task.`,
+      );
+      await resetTask(task).catch(() => {});
+      nextTask = null;
+      break;
+    }
+
+    const result = resultsById.get(normalizedId) ?? null;
+    const discovered = Array.isArray(result?.discovered)
+      ? result.discovered
+      : [];
+    const resolvedHighest = Number.isFinite(result?.highestMatchId)
+      ? result.highestMatchId
+      : Number.isFinite(player.highestMatchId)
+        ? Math.trunc(player.highestMatchId)
+        : Number.isFinite(task?.highestMatchId)
+          ? Math.trunc(task.highestMatchId)
+          : null;
+
+    logToken(
+      token,
+      `Discovered ${discovered.length} accounts from ${normalizedId}.`,
+    );
+
+    const depthValue = Number.isFinite(player.depth)
+      ? Math.trunc(player.depth)
+      : null;
+    const submissionHighestMatchId = Number.isFinite(resolvedHighest)
+      ? Math.trunc(resolvedHighest)
+      : null;
+    const shouldRequestNext = requestNextTask && index === discoveryPlayers.length - 1;
+    const submissionNextTask = await submitDiscovery(
+      normalizedId,
+      discovered,
+      depthValue,
+      submissionHighestMatchId,
+      shouldRequestNext,
+    );
+    logToken(token, `Submitted discovery results for ${normalizedId}.`);
+    if (shouldRequestNext) {
+      nextTask = submissionNextTask;
+    }
+  }
+
+  return nextTask;
 }
 
 const PROGRESS_REFRESH_INTERVAL = 10000;
@@ -2130,90 +2220,33 @@ async function workLoopForToken(token) {
         nextTask = await submitHeroStats(heroResults);
         logToken(token, `Submitted hero stats for ${taskLabel}.`);
       } else if (task.type === "discover_matches") {
-        const discoveryPlayers = getDiscoveryTaskPlayers(task);
-        if (discoveryPlayers.length === 0) {
-          logToken(token, "Discovery task missing steamAccountId. Resetting task.");
+        nextTask = await runDiscoveryTask(task, token);
+      } else if (task.type === "refresh_player_data") {
+        const refreshIds = getTaskSteamAccountIds(task);
+        if (refreshIds.length === 0) {
+          logToken(token, "Refresh task missing steamAccountId. Resetting task.");
           await resetTask(task).catch(() => {});
           break;
         }
 
-        const discoveryLabels = discoveryPlayers
-          .map((player) => normalizeSteamAccountId(player.steamAccountId))
-          .filter((id) => id !== null)
-          .join(", ");
-        logToken(
-          token,
-          `Discovery task for ${discoveryLabels || "?"}.`,
-        );
-
-        const discoveryResults = await discoverMatches(
-          discoveryPlayers.map((player) => ({
-            steamAccountId: player.steamAccountId,
-            highestMatchId: player.highestMatchId,
-          })),
-          token.activeToken,
-        );
-
-        const resultsById = new Map();
-        discoveryResults.forEach((result) => {
-          const normalizedId = normalizeSteamAccountId(result?.steamAccountId);
-          if (normalizedId !== null && !resultsById.has(normalizedId)) {
-            resultsById.set(normalizedId, result);
-          }
+        logToken(token, `Refresh task for ${taskLabel}.`);
+        await runDiscoveryTask(task, token, {
+          requestNextTask: false,
+          logPrefix: "Refresh discovery",
         });
 
-        for (let index = 0; index < discoveryPlayers.length; index += 1) {
-          const player = discoveryPlayers[index];
-          const normalizedId = normalizeSteamAccountId(player.steamAccountId);
-          if (normalizedId === null) {
-            logToken(
-              token,
-              "Discovery task missing steamAccountId. Resetting task.",
-            );
-            await resetTask(task).catch(() => {});
-            nextTask = null;
-            break;
-          }
-
-          const result = resultsById.get(normalizedId) ?? null;
-          const discovered = Array.isArray(result?.discovered)
-            ? result.discovered
-            : [];
-          const resolvedHighest = Number.isFinite(result?.highestMatchId)
-            ? result.highestMatchId
-            : Number.isFinite(player.highestMatchId)
-              ? Math.trunc(player.highestMatchId)
-              : Number.isFinite(task?.highestMatchId)
-                ? Math.trunc(task.highestMatchId)
-                : null;
-
-          logToken(
-            token,
-            `Discovered ${discovered.length} accounts from ${normalizedId}.`,
-          );
-
-          const requestNextTask = index === discoveryPlayers.length - 1;
-          const submissionHighestMatchId = Number.isFinite(resolvedHighest)
-            ? Math.trunc(resolvedHighest)
-            : null;
-          const depthValue = Number.isFinite(player.depth)
-            ? Math.trunc(player.depth)
-            : Number.isFinite(task.depth)
-              ? Math.trunc(task.depth)
-              : null;
-
-          const submissionResult = await submitDiscovery(
-            normalizedId,
-            discovered,
-            depthValue,
-            submissionHighestMatchId,
-            requestNextTask,
-          );
-          logToken(token, `Submitted discovery results for ${normalizedId}.`);
-          if (requestNextTask) {
-            nextTask = submissionResult;
-          }
-        }
+        const heroResults = await fetchPlayerHeroes(refreshIds, token.activeToken);
+        const totalHeroes = heroResults.reduce(
+          (sum, player) =>
+            sum + (Array.isArray(player?.heroes) ? player.heroes.length : 0),
+          0,
+        );
+        logToken(
+          token,
+          `Fetched hero stats for refresh task ${taskLabel} (${totalHeroes} heroes).`,
+        );
+        nextTask = await submitHeroStats(heroResults, { requestNextTask: true });
+        logToken(token, `Completed refresh for ${taskLabel}.`);
       } else {
         logToken(
           token,

@@ -397,6 +397,7 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                         SELECT steamAccountId
                         FROM players
                         WHERE hero_done=TRUE
+                          AND discover_done=TRUE
                           AND assigned_to IS NULL
                         ORDER BY hero_refreshed_at ASC NULLS FIRST,
                                  steamAccountId ASC
@@ -405,31 +406,80 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                     )
                     UPDATE players
                     SET hero_done=FALSE,
-                        assigned_to='hero',
+                        assigned_to='refresh',
                         assigned_at=CURRENT_TIMESTAMP
                     WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
                       AND hero_done=TRUE
+                      AND discover_done=TRUE
                       AND assigned_to IS NULL
-                    RETURNING steamAccountId
+                    RETURNING steamAccountId, depth, highest_match_id
                     """,
                     (MAX_HERO_TASK_SIZE,),
                     retry_interval=ASSIGNMENT_RETRY_INTERVAL,
                 ).fetchall()
                 if assigned_rows:
-                    steam_account_ids = sorted(
-                        {
-                            int(row_value(assigned_row, "steamAccountId"))
-                            for assigned_row in assigned_rows
-                        }
-                    )
-                    if not steam_account_ids:
+                    players: list[dict] = []
+                    for assigned_row in assigned_rows:
+                        try:
+                            steam_account_id = int(
+                                row_value(assigned_row, "steamAccountId")
+                            )
+                        except (TypeError, ValueError):
+                            continue
+                        if steam_account_id <= 0:
+                            continue
+                        depth_value = row_value(assigned_row, "depth")
+                        try:
+                            depth = int(depth_value)
+                        except (TypeError, ValueError):
+                            depth = None
+                        highest_match_id_value = row_value(
+                            assigned_row, "highest_match_id"
+                        )
+                        try:
+                            highest_match_id = (
+                                int(highest_match_id_value)
+                                if highest_match_id_value is not None
+                                else None
+                            )
+                        except (TypeError, ValueError):
+                            highest_match_id = None
+                        if highest_match_id is not None and highest_match_id < 0:
+                            highest_match_id = None
+                        players.append(
+                            {
+                                "steamAccountId": steam_account_id,
+                                "depth": depth,
+                                "highestMatchId": highest_match_id,
+                            }
+                        )
+
+                    if not players:
                         loop_count = next_count
                         continue
+
+                    players.sort(
+                        key=lambda entry: (
+                            entry.get("depth") or 0,
+                            entry["steamAccountId"],
+                        )
+                    )
+                    steam_account_ids = [
+                        player["steamAccountId"] for player in players
+                    ]
                     candidate_payload = {
-                        "type": "fetch_hero_stats",
+                        "type": "refresh_player_data",
                         "steamAccountId": steam_account_ids[0],
                         "steamAccountIds": steam_account_ids,
+                        "players": players,
                     }
+                    first_player = players[0]
+                    if first_player.get("depth") is not None:
+                        candidate_payload["depth"] = first_player["depth"]
+                    if first_player.get("highestMatchId") is not None:
+                        candidate_payload["highestMatchId"] = first_player[
+                            "highestMatchId"
+                        ]
 
             if candidate_payload is None:
                 candidate_payload = _assign_next_hero(cur)

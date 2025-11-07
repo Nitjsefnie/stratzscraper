@@ -394,14 +394,18 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
                 """
             )
             cur.execute(
+                "DROP INDEX IF EXISTS idx_players_hero_refresh_queue"
+            )
+            cur.execute(
                 """
-                -- stratz_scraper.web.assignment.assign_next_task hero refresh scheduling
-                CREATE INDEX IF NOT EXISTS idx_players_hero_refresh_queue
+                -- stratz_scraper.web.assignment.assign_next_task refresh scheduling
+                CREATE INDEX IF NOT EXISTS idx_players_refresh_queue
                     ON players (
                         hero_refreshed_at ASC NULLS FIRST,
                         steamAccountId ASC
                     )
                     WHERE hero_done=TRUE
+                      AND discover_done=TRUE
                       AND assigned_to IS NULL
                 """
             )
