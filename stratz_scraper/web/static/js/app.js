@@ -1198,6 +1198,7 @@ function addTokenRow(initial = {}, options = {}) {
     running: false,
     backoff: 1000,
     requestsRemaining: parseMaxRequests(rawMax),
+    nextTask: null,
     activeToken: null,
     stopRequested: false,
     dom: null,
@@ -1949,6 +1950,7 @@ async function workLoopForToken(token) {
   token.activeToken = token.value.trim();
   token.backoff = 1000;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
+  token.nextTask = null;
   token.lastStartMs = getNowMs();
   const shouldExpand = token.expanded !== false;
   token.expanded = shouldExpand;
@@ -1970,6 +1972,7 @@ async function workLoopForToken(token) {
         task = await getTask();
       }
       if (!task) {
+        token.nextTask = null;
         const wait = 5_000;
         logToken(token, "No tasks available. Waiting 5 seconds before retrying.");
         token.backoff = wait;
@@ -1981,8 +1984,12 @@ async function workLoopForToken(token) {
         }
         continue;
       }
+      if (token.nextTask && token.nextTask === task) {
+        token.nextTask = null;
+      }
       if (token.stopRequested) {
         await resetTask(task).catch(() => {});
+        token.nextTask = null;
         break;
       }
       const taskLabel = formatTaskIdLabel(task);
@@ -2044,6 +2051,7 @@ async function workLoopForToken(token) {
         await resetTask(task).catch(() => {});
         break;
       }
+      token.nextTask = nextTask ?? null;
       refreshProgress().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         logToken(token, `Progress refresh failed: ${message}`);
@@ -2067,11 +2075,15 @@ async function workLoopForToken(token) {
               );
             }
           }
+          token.nextTask = null;
           logToken(token, "Reached request limit. Stopping worker.");
           break;
         }
       }
       task = nextTask ?? null;
+      if (!task) {
+        token.nextTask = null;
+      }
       token.backoff = 10000;
       updateBackoffDisplay();
       updateTokenDisplay(token);
@@ -2097,6 +2109,7 @@ async function workLoopForToken(token) {
         }
       }
       task = null;
+      token.nextTask = null;
       if (hadTask && maybeRemoveExpiredToken(token)) {
         break;
       }
@@ -2131,6 +2144,25 @@ async function workLoopForToken(token) {
       }
     }
   }
+
+  if (token.stopRequested && token.nextTask) {
+    const pendingTask = token.nextTask;
+    try {
+      await resetTask(pendingTask);
+      logToken(
+        token,
+        `Reset pending task ${formatTaskIdLabel(pendingTask)} before stopping.`,
+      );
+    } catch (resetError) {
+      const resetMessage =
+        resetError instanceof Error ? resetError.message : String(resetError);
+      logToken(
+        token,
+        `Failed to reset pending task ${formatTaskIdLabel(pendingTask)}: ${resetMessage}`,
+      );
+    }
+  }
+  token.nextTask = null;
 
   if (token.removed) {
     return;
