@@ -206,26 +206,33 @@ def create_app() -> Flask:
             if highest_match_id is not None and highest_match_id < 0:
                 highest_match_id = None
             discovered_payload = data.pop("discovered", [])
+            retain_assignment = data.get("retainAssignment") is True
             assignment_depth = None
             next_task = None
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
+                set_clauses = [
+                    "discover_done=TRUE",
+                    "full_write_done=FALSE",
+                ]
+                if not retain_assignment:
+                    set_clauses.extend(["assigned_to=NULL", "assigned_at=NULL"])
+                set_clauses.append(
+                    "highest_match_id = CASE\n"
+                    "                        WHEN CAST(%s AS BIGINT) IS NULL THEN highest_match_id\n"
+                    "                        WHEN highest_match_id IS NULL THEN CAST(%s AS BIGINT)\n"
+                    "                        ELSE GREATEST(highest_match_id, CAST(%s AS BIGINT))\n"
+                    "                    END"
+                )
+                update_query = (
+                    "UPDATE players\n"
+                    "SET "
+                    + ",\n        ".join(set_clauses)
+                    + "\nWHERE steamAccountId=%s\nRETURNING depth"
+                )
                 update_row = retryable_execute(
                     cur,
-                    """
-                    UPDATE players
-                    SET discover_done=TRUE,
-                        full_write_done=FALSE,
-                        assigned_to=NULL,
-                        assigned_at=NULL,
-                        highest_match_id = CASE
-                            WHEN CAST(%s AS BIGINT) IS NULL THEN highest_match_id
-                            WHEN highest_match_id IS NULL THEN CAST(%s AS BIGINT)
-                            ELSE GREATEST(highest_match_id, CAST(%s AS BIGINT))
-                        END
-                    WHERE steamAccountId=%s
-                    RETURNING depth
-                    """,
+                    update_query,
                     (
                         highest_match_id,
                         highest_match_id,

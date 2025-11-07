@@ -1878,7 +1878,9 @@ async function submitDiscovery(
   depth,
   highestMatchId = null,
   requestNextTask = true,
+  options = {},
 ) {
+  const { retainAssignment = false } = options;
   const payload = {
     type: "discover_matches",
     steamAccountId: playerId,
@@ -1897,6 +1899,9 @@ async function submitDiscovery(
     normalizedHighest = Math.max(0, Math.trunc(highestMatchId));
   }
   payload.highestMatchId = normalizedHighest;
+  if (retainAssignment === true) {
+    payload.retainAssignment = true;
+  }
   const response = await fetch("/submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1913,7 +1918,11 @@ async function submitDiscovery(
 }
 
 async function runDiscoveryTask(task, token, options = {}) {
-  const { requestNextTask = true, logPrefix = "Discovery" } = options;
+  const {
+    requestNextTask = true,
+    logPrefix = "Discovery",
+    retainAssignment = false,
+  } = options;
 
   const discoveryPlayers = getDiscoveryTaskPlayers(task);
   if (discoveryPlayers.length === 0) {
@@ -1991,6 +2000,7 @@ async function runDiscoveryTask(task, token, options = {}) {
       depthValue,
       submissionHighestMatchId,
       shouldRequestNext,
+      { retainAssignment },
     );
     logToken(token, `Submitted discovery results for ${normalizedId}.`);
     if (shouldRequestNext) {
@@ -2233,6 +2243,7 @@ async function workLoopForToken(token) {
         await runDiscoveryTask(task, token, {
           requestNextTask: false,
           logPrefix: "Refresh discovery",
+          retainAssignment: true,
         });
 
         const heroResults = await fetchPlayerHeroes(refreshIds, token.activeToken);
