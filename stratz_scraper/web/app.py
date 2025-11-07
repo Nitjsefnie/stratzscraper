@@ -63,12 +63,32 @@ def create_app() -> Flask:
     @app.post("/task/reset")
     def reset_task():
         data = request.get_json(force=True) or {}
-        try:
-            steam_account_id = int(data["steamAccountId"])
-        except (KeyError, TypeError, ValueError):
-            return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
+        raw_ids = data.get("steamAccountIds")
+        steam_account_ids: list[int] = []
+        if isinstance(raw_ids, list):
+            for raw_id in raw_ids:
+                try:
+                    parsed = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    steam_account_ids.append(parsed)
+        if not steam_account_ids:
+            try:
+                steam_account_id = int(data["steamAccountId"])
+            except (KeyError, TypeError, ValueError):
+                return (
+                    jsonify({"status": "error", "message": "steamAccountId is required"}),
+                    400,
+                )
+            if steam_account_id > 0:
+                steam_account_ids = [steam_account_id]
         task_type = data.get("type")
-        if not reset_player_task(steam_account_id, task_type):
+        any_success = False
+        for steam_account_id in steam_account_ids:
+            if reset_player_task(steam_account_id, task_type):
+                any_success = True
+        if not any_success:
             return (
                 jsonify({"status": "error", "message": "Player not found"}),
                 404,
@@ -81,38 +101,76 @@ def create_app() -> Flask:
         task_type = data.get("type")
         request_new_task = data.get("task") is True
         if task_type == "fetch_hero_stats":
-            try:
-                steam_account_id = int(data["steamAccountId"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            heroes_payload = data.get("heroes", [])
-            next_task = None
-            with db_connection(write=True) as conn:
-                cur = conn.cursor()
-                retryable_execute(
-                    cur,
-                    """
-                    UPDATE players
-                    SET hero_done=TRUE,
-                        assigned_to=NULL,
-                        assigned_at=NULL,
-                        hero_refreshed_at=CURRENT_TIMESTAMP
-                    WHERE steamAccountId=%s
-                    """,
-                    (steam_account_id,),
-                    retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-                )
-                if cur.rowcount == 0:
+            players_payload = []
+            raw_players = data.get("players")
+            if isinstance(raw_players, list):
+                seen: set[int] = set()
+                for entry in raw_players:
+                    if not isinstance(entry, dict):
+                        continue
+                    try:
+                        steam_account_id = int(entry["steamAccountId"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if steam_account_id <= 0 or steam_account_id in seen:
+                        continue
+                    heroes_payload = entry.get("heroes", [])
+                    players_payload.append((steam_account_id, heroes_payload))
+                    seen.add(steam_account_id)
+            if not players_payload:
+                try:
+                    steam_account_id = int(data["steamAccountId"])
+                except (KeyError, TypeError, ValueError):
                     return (
-                        jsonify({"status": "error", "message": "Player not found"}),
-                        404,
+                        jsonify({"status": "error", "message": "steamAccountId is required"}),
+                        400,
                     )
-                if request_new_task:
-                    next_task = assign_next_task(connection=conn)
-            submit_hero_submission(
-                steam_account_id,
-                heroes_payload,
-            )
+                if steam_account_id <= 0:
+                    return (
+                        jsonify({"status": "error", "message": "steamAccountId must be positive"}),
+                        400,
+                    )
+                heroes_payload = data.get("heroes", [])
+                players_payload.append((steam_account_id, heroes_payload))
+            next_task = None
+            successful_payloads: list[tuple[int, object]] = []
+            try:
+                with db_connection(write=True) as conn:
+                    cur = conn.cursor()
+                    for steam_account_id, heroes_payload in players_payload:
+                        update_cursor = retryable_execute(
+                            cur,
+                            """
+                            UPDATE players
+                            SET hero_done=TRUE,
+                                assigned_to=NULL,
+                                assigned_at=NULL,
+                                hero_refreshed_at=CURRENT_TIMESTAMP
+                            WHERE steamAccountId=%s
+                            """,
+                            (steam_account_id,),
+                            retry_interval=ASSIGNMENT_RETRY_INTERVAL,
+                        )
+                        updated_rows = (
+                            update_cursor.rowcount
+                            if update_cursor.rowcount is not None
+                            else 0
+                        )
+                        if updated_rows == 0:
+                            raise LookupError
+                        successful_payloads.append((steam_account_id, heroes_payload))
+                    if request_new_task:
+                        next_task = assign_next_task(connection=conn)
+            except LookupError:
+                return (
+                    jsonify({"status": "error", "message": "Player not found"}),
+                    404,
+                )
+            for steam_account_id, heroes_payload in successful_payloads:
+                submit_hero_submission(
+                    steam_account_id,
+                    heroes_payload,
+                )
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task

@@ -19,6 +19,7 @@ ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
 HERO_ASSIGNMENT_CURSOR_KEY = "hero_assignment_cursor"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 ASSIGNMENT_RETRY_INTERVAL = 0.05
+MAX_HERO_TASK_SIZE: Final[int] = 5
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -222,7 +223,7 @@ def _assign_next_hero(cur) -> dict | None:
         last_cursor = 0
 
     for _ in range(2):
-        assigned_row = retryable_execute(
+        assigned_rows = retryable_execute(
             cur,
             """
             WITH candidate AS (
@@ -232,7 +233,7 @@ def _assign_next_hero(cur) -> dict | None:
                   AND assigned_to IS NULL
                   AND steamAccountId > %s
                 ORDER BY steamAccountId ASC
-                LIMIT 1
+                LIMIT %s
                 FOR UPDATE SKIP LOCKED
             ),
             fallback AS (
@@ -242,7 +243,7 @@ def _assign_next_hero(cur) -> dict | None:
                   AND assigned_to IS NULL
                   AND steamAccountId > 0
                 ORDER BY steamAccountId ASC
-                LIMIT 1
+                LIMIT %s
                 FOR UPDATE SKIP LOCKED
             ),
             selected AS (
@@ -250,7 +251,7 @@ def _assign_next_hero(cur) -> dict | None:
                 UNION ALL
                 SELECT steamAccountId FROM fallback
                 WHERE NOT EXISTS (SELECT 1 FROM candidate)
-                LIMIT 1
+                LIMIT %s
             )
             UPDATE players
             SET assigned_to='hero',
@@ -260,11 +261,24 @@ def _assign_next_hero(cur) -> dict | None:
               AND assigned_to IS NULL
             RETURNING steamAccountId
             """,
-            (last_cursor,),
+            (
+                last_cursor,
+                MAX_HERO_TASK_SIZE,
+                MAX_HERO_TASK_SIZE,
+                MAX_HERO_TASK_SIZE,
+            ),
             retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-        ).fetchone()
-        if assigned_row:
-            steam_account_id = int(row_value(assigned_row, "steamAccountId"))
+        ).fetchall()
+        if assigned_rows:
+            steam_account_ids = sorted(
+                {
+                    int(row_value(assigned_row, "steamAccountId"))
+                    for assigned_row in assigned_rows
+                }
+            )
+            if not steam_account_ids:
+                continue
+            steam_account_id = steam_account_ids[-1]
             retryable_execute(
                 cur,
                 """
@@ -277,7 +291,8 @@ def _assign_next_hero(cur) -> dict | None:
             )
             return {
                 "type": "fetch_hero_stats",
-                "steamAccountId": steam_account_id,
+                "steamAccountId": steam_account_ids[0],
+                "steamAccountIds": steam_account_ids,
             }
 
     return None
@@ -342,7 +357,7 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                     continue
 
             if candidate_payload is None and refresh_due:
-                assigned_row = retryable_execute(
+                assigned_rows = retryable_execute(
                     cur,
                     """
                     WITH candidate AS (
@@ -352,7 +367,7 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                           AND assigned_to IS NULL
                         ORDER BY hero_refreshed_at ASC NULLS FIRST,
                                  steamAccountId ASC
-                        LIMIT 1
+                        LIMIT %s
                         FOR UPDATE SKIP LOCKED
                     )
                     UPDATE players
@@ -364,14 +379,23 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                       AND assigned_to IS NULL
                     RETURNING steamAccountId
                     """,
+                    (MAX_HERO_TASK_SIZE,),
                     retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-                ).fetchone()
-                if assigned_row:
+                ).fetchall()
+                if assigned_rows:
+                    steam_account_ids = sorted(
+                        {
+                            int(row_value(assigned_row, "steamAccountId"))
+                            for assigned_row in assigned_rows
+                        }
+                    )
+                    if not steam_account_ids:
+                        loop_count = next_count
+                        continue
                     candidate_payload = {
                         "type": "fetch_hero_stats",
-                        "steamAccountId": int(
-                            row_value(assigned_row, "steamAccountId")
-                        ),
+                        "steamAccountId": steam_account_ids[0],
+                        "steamAccountIds": steam_account_ids,
                     }
 
             if candidate_payload is None:

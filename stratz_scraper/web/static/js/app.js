@@ -158,6 +158,49 @@ function formatWinRate(wins, matches) {
   return `${rate.toFixed(1)}%`;
 }
 
+function getTaskSteamAccountIds(task) {
+  if (!task || typeof task !== "object") {
+    return [];
+  }
+  const ids = [];
+  const seen = new Set();
+  if (Array.isArray(task.steamAccountIds)) {
+    for (const rawId of task.steamAccountIds) {
+      const normalized = normalizeSteamAccountId(rawId);
+      if (normalized !== null && !seen.has(normalized)) {
+        ids.push(normalized);
+        seen.add(normalized);
+      }
+    }
+  }
+  if (ids.length === 0) {
+    const fallback = normalizeSteamAccountId(task.steamAccountId);
+    if (fallback !== null && !seen.has(fallback)) {
+      ids.push(fallback);
+    }
+  }
+  return ids;
+}
+
+function formatTaskIdLabel(task) {
+  const ids = getTaskSteamAccountIds(task);
+  if (ids.length === 0) {
+    const fallback = task?.steamAccountId;
+    if (fallback === null || fallback === undefined) {
+      return "?";
+    }
+    const normalized = normalizeSteamAccountId(fallback);
+    if (normalized !== null) {
+      return normalized;
+    }
+    return safeText(fallback) || "?";
+  }
+  if (ids.length === 1) {
+    return ids[0];
+  }
+  return ids.join(", ");
+}
+
 function base64UrlDecode(value) {
   if (typeof value !== "string" || value.length === 0) {
     return null;
@@ -1427,27 +1470,56 @@ async function getTask() {
 
 async function resetTask(task) {
   if (!task) return;
+  const ids = getTaskSteamAccountIds(task);
+  const payload = {
+    type: task.type,
+  };
+  if (ids.length > 0) {
+    payload.steamAccountIds = ids;
+    payload.steamAccountId = ids[0];
+  } else if (task.steamAccountId !== undefined) {
+    const fallback = normalizeSteamAccountId(task.steamAccountId);
+    if (fallback !== null) {
+      payload.steamAccountId = fallback;
+    }
+  }
   const response = await fetch("/task/reset", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      steamAccountId: task.steamAccountId,
-      type: task.type,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     throw new Error(`Reset failed with status ${response.status}`);
   }
 }
 
-async function fetchPlayerHeroes(playerId, token) {
+async function fetchPlayerHeroes(playerIds, token) {
   if (!token) {
     throw new Error('Stratz token is not set');
   }
 
+  const providedIds = Array.isArray(playerIds) ? playerIds : [playerIds];
+  const normalizedIds = [];
+  const seen = new Set();
+  for (const rawId of providedIds) {
+    const normalized = normalizeSteamAccountId(rawId);
+    if (normalized !== null && !seen.has(normalized)) {
+      normalizedIds.push(normalized);
+      seen.add(normalized);
+    }
+    if (normalizedIds.length >= 5) {
+      break;
+    }
+  }
+
+  if (normalizedIds.length === 0) {
+    return [];
+  }
+
   const query = `
-    query HeroPerf($id: Long!) {
-      player(steamAccountId: $id) {
+    query HeroPerf($ids: [Long]!) {
+      players(steamAccountIds: $ids) {
+        steamAccountId
         heroesPerformance(request: { take: 999999, gameModeIds: [1, 22] }, take: 200) {
           heroId
           matchCount
@@ -1456,13 +1528,16 @@ async function fetchPlayerHeroes(playerId, token) {
       }
     }
   `;
+
+  const numericIds = normalizedIds.map((id) => Number(id));
+
   const response = await fetch('https://api.stratz.com/graphql', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ query, variables: { id: playerId } }),
+    body: JSON.stringify({ query, variables: { ids: numericIds } }),
   });
 
   if (!response.ok) {
@@ -1498,16 +1573,31 @@ async function fetchPlayerHeroes(playerId, token) {
     throw error;
   }
 
-  const heroes = payload?.data?.player?.heroesPerformance;
-  if (!Array.isArray(heroes)) {
-    return [];
-  }
+  const players = Array.isArray(payload?.data?.players) ? payload.data.players : [];
+  const playersById = new Map();
+  players.forEach((player) => {
+    const normalizedId = normalizeSteamAccountId(player?.steamAccountId);
+    if (normalizedId !== null && !playersById.has(normalizedId)) {
+      playersById.set(normalizedId, player);
+    }
+  });
 
-  return heroes.map((hero) => ({
-    heroId: hero.heroId,
-    games: hero.matchCount,
-    wins: hero.winCount,
-  }));
+  return normalizedIds.map((id, index) => {
+    const fallbackEntry = players[index] ?? null;
+    const player = playersById.get(id) ?? fallbackEntry;
+    const resolvedId = normalizeSteamAccountId(player?.steamAccountId) ?? id;
+    const heroes = Array.isArray(player?.heroesPerformance)
+      ? player.heroesPerformance.map((hero) => ({
+          heroId: hero.heroId,
+          games: hero.matchCount,
+          wins: hero.winCount,
+        }))
+      : [];
+    return {
+      steamAccountId: resolvedId,
+      heroes,
+    };
+  });
 }
 
 async function discoverMatches(
@@ -1629,22 +1719,53 @@ async function discoverMatches(
   };
 }
 
-async function submitHeroStats(playerId, heroes) {
+async function submitHeroStats(players) {
+  const normalizedPlayers = [];
+  const seen = new Set();
+  if (Array.isArray(players)) {
+    for (const player of players) {
+      if (!player || typeof player !== "object") {
+        continue;
+      }
+      const normalizedId = normalizeSteamAccountId(player.steamAccountId);
+      if (normalizedId === null || seen.has(normalizedId)) {
+        continue;
+      }
+      const heroes = Array.isArray(player.heroes) ? player.heroes : [];
+      normalizedPlayers.push({
+        steamAccountId: normalizedId,
+        heroes,
+      });
+      seen.add(normalizedId);
+    }
+  }
+
+  if (normalizedPlayers.length === 0) {
+    throw new Error("No valid players to submit.");
+  }
+
+  const requestPayload = {
+    type: "fetch_hero_stats",
+    task: true,
+    players: normalizedPlayers,
+    steamAccountIds: normalizedPlayers.map((player) => player.steamAccountId),
+  };
+
+  if (normalizedPlayers.length === 1) {
+    requestPayload.steamAccountId = normalizedPlayers[0].steamAccountId;
+    requestPayload.heroes = normalizedPlayers[0].heroes;
+  }
+
   const response = await fetch("/submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "fetch_hero_stats",
-      steamAccountId: playerId,
-      heroes,
-      task: true,
-    }),
+    body: JSON.stringify(requestPayload),
   });
   if (!response.ok) {
     throw new Error(`Submit failed with status ${response.status}`);
   }
-  const payload = await response.json();
-  return payload?.task ?? null;
+  const responsePayload = await response.json();
+  return responsePayload?.task ?? null;
 }
 
 async function submitDiscovery(playerId, discovered, depth, highestMatchId = null) {
@@ -1864,15 +1985,30 @@ async function workLoopForToken(token) {
         await resetTask(task).catch(() => {});
         break;
       }
-      const taskId = task.steamAccountId;
+      const taskLabel = formatTaskIdLabel(task);
       let nextTask = null;
       if (task.type === "fetch_hero_stats") {
-        logToken(token, `Hero stats task for ${taskId}.`);
-        const heroes = await fetchPlayerHeroes(taskId, token.activeToken);
-        logToken(token, `Fetched ${heroes.length} heroes for ${taskId}.`);
-        nextTask = await submitHeroStats(taskId, heroes);
-        logToken(token, `Submitted ${heroes.length} heroes for ${taskId}.`);
+        const heroTaskIds = getTaskSteamAccountIds(task);
+        if (heroTaskIds.length === 0) {
+          logToken(token, "Hero stats task missing steamAccountId. Resetting task.");
+          await resetTask(task).catch(() => {});
+          break;
+        }
+        logToken(token, `Hero stats task for ${taskLabel}.`);
+        const heroResults = await fetchPlayerHeroes(heroTaskIds, token.activeToken);
+        const totalHeroes = heroResults.reduce(
+          (sum, player) =>
+            sum + (Array.isArray(player?.heroes) ? player.heroes.length : 0),
+          0,
+        );
+        logToken(
+          token,
+          `Fetched hero stats for ${taskLabel} (${totalHeroes} heroes).`,
+        );
+        nextTask = await submitHeroStats(heroResults);
+        logToken(token, `Submitted hero stats for ${taskLabel}.`);
       } else if (task.type === "discover_matches") {
+        const taskId = task.steamAccountId;
         logToken(
           token,
           `Discovery task for ${taskId} (depth ${task.depth ?? 0}).`,
@@ -1903,7 +2039,7 @@ async function workLoopForToken(token) {
       } else {
         logToken(
           token,
-          `Received unknown task type ${task.type}. Resetting task ${taskId}.`,
+          `Received unknown task type ${task.type}. Resetting task ${taskLabel}.`,
         );
         await resetTask(task).catch(() => {});
         break;
@@ -1924,9 +2060,10 @@ async function workLoopForToken(token) {
             } catch (resetError) {
               const resetMessage =
                 resetError instanceof Error ? resetError.message : String(resetError);
+              const nextTaskLabel = formatTaskIdLabel(nextTask);
               logToken(
                 token,
-                `Failed to reset next task ${nextTask?.steamAccountId ?? "?"}: ${resetMessage}`,
+                `Failed to reset next task ${nextTaskLabel}: ${resetMessage}`,
               );
             }
           }
@@ -1943,19 +2080,19 @@ async function workLoopForToken(token) {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const activeId = task?.steamAccountId;
-      logToken(token, `Error${activeId ? ` for ${activeId}` : ""}: ${message}`);
+      const activeLabel = formatTaskIdLabel(task);
+      logToken(token, `Error${activeLabel !== "?" ? ` for ${activeLabel}` : ""}: ${message}`);
       const hadTask = Boolean(task);
       if (task) {
         try {
           await resetTask(task);
-          logToken(token, `Reset task ${task.steamAccountId}.`);
+          logToken(token, `Reset task ${formatTaskIdLabel(task)}.`);
         } catch (resetError) {
           const resetMessage =
             resetError instanceof Error ? resetError.message : String(resetError);
           logToken(
             token,
-            `Failed to reset ${task?.steamAccountId ?? "?"}: ${resetMessage}`,
+            `Failed to reset ${formatTaskIdLabel(task)}: ${resetMessage}`,
           );
         }
       }
