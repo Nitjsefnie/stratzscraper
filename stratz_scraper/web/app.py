@@ -205,7 +205,35 @@ def create_app() -> Flask:
                     highest_match_id = None
             if highest_match_id is not None and highest_match_id < 0:
                 highest_match_id = None
-            discovered_payload = data.pop("discovered", [])
+            raw_discovered = data.pop("discovered", [])
+            if isinstance(raw_discovered, list):
+                discovered_payload = raw_discovered
+            else:
+                discovered_payload = []
+            has_discovered_accounts = False
+            if discovered_payload:
+                seen_candidates: set[int] = set()
+                for entry in discovered_payload:
+                    candidate: object | None
+                    if isinstance(entry, dict):
+                        candidate = entry.get("steamAccountId")
+                        if candidate is None:
+                            candidate = entry.get("id")
+                    else:
+                        candidate = entry
+                    try:
+                        candidate_id = int(candidate) if candidate is not None else None
+                    except (TypeError, ValueError):
+                        continue
+                    if candidate_id is None:
+                        continue
+                    if candidate_id <= 0 or candidate_id == steam_account_id:
+                        continue
+                    if candidate_id in seen_candidates:
+                        continue
+                    seen_candidates.add(candidate_id)
+                    has_discovered_accounts = True
+                    break
             retain_assignment = data.get("retainAssignment") is True
             assignment_depth = None
             next_task = None
@@ -213,8 +241,9 @@ def create_app() -> Flask:
                 cur = conn.cursor()
                 set_clauses = [
                     "discover_done=TRUE",
-                    "full_write_done=FALSE",
+                    "full_write_done=%s",
                 ]
+                set_parameters: list[object] = [not has_discovered_accounts]
                 if not retain_assignment:
                     set_clauses.extend(["assigned_to=NULL", "assigned_at=NULL"])
                 set_clauses.append(
@@ -234,6 +263,7 @@ def create_app() -> Flask:
                     cur,
                     update_query,
                     (
+                        *set_parameters,
                         highest_match_id,
                         highest_match_id,
                         highest_match_id,
@@ -249,13 +279,14 @@ def create_app() -> Flask:
                 assignment_depth = update_row["depth"] if update_row is not None else None
                 if request_new_task:
                     next_task = assign_next_task(connection=conn)
-            submit_discover_submission(
-                steam_account_id,
-                discovered_payload,
-                provided_next_depth,
-                provided_depth,
-                assignment_depth,
-            )
+            if has_discovered_accounts:
+                submit_discover_submission(
+                    steam_account_id,
+                    discovered_payload,
+                    provided_next_depth,
+                    provided_depth,
+                    assignment_depth,
+                )
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task
