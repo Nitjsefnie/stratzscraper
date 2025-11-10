@@ -353,8 +353,6 @@ def assign_next_task(
 
 
 def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | None:
-    task_payload: dict | None = None
-
     if run_cleanup:
         maybe_run_assignment_cleanup(connection)
 
@@ -368,149 +366,100 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
         except (TypeError, ValueError):
             current_count = 0
 
-        loop_count = current_count
-        task_payload = None
+        candidate_payload = _assign_next_hero(cur)
 
-        while True:
-            next_count = loop_count + 1
-            refresh_due = next_count % 11 == 0
-            discovery_due = next_count % 199 == 0
+        if candidate_payload is None:
+            candidate_payload = _assign_discovery(cur)
+            if candidate_payload is _DISCOVERY_THROTTLED:
+                return None
 
-            candidate_payload = None
-
-            if discovery_due:
-                candidate_payload = _assign_discovery(cur)
-                if candidate_payload is _DISCOVERY_THROTTLED:
-                    loop_count = next_count
-                    continue
-
-                if candidate_payload is None:
-                    _restart_discovery_cycle(cur)
-                    loop_count = next_count
-                    continue
-
-            if candidate_payload is None and refresh_due:
-                assigned_rows = retryable_execute(
-                    cur,
-                    """
-                    WITH candidate AS (
-                        SELECT steamAccountId
-                        FROM players
-                        WHERE hero_done=TRUE
-                          AND discover_done=TRUE
-                          AND assigned_to IS NULL
-                        ORDER BY hero_refreshed_at ASC NULLS FIRST,
-                                 steamAccountId ASC
-                        LIMIT %s
-                        FOR UPDATE SKIP LOCKED
-                    )
-                    UPDATE players
-                    SET hero_done=FALSE,
-                        assigned_to='refresh',
-                        assigned_at=CURRENT_TIMESTAMP
-                    WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                      AND hero_done=TRUE
+        if candidate_payload is None:
+            assigned_rows = retryable_execute(
+                cur,
+                """
+                WITH candidate AS (
+                    SELECT steamAccountId
+                    FROM players
+                    WHERE hero_done=TRUE
                       AND discover_done=TRUE
                       AND assigned_to IS NULL
-                    RETURNING steamAccountId, depth, highest_match_id
-                    """,
-                    (MAX_HERO_TASK_SIZE,),
-                    retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-                ).fetchall()
-                if assigned_rows:
-                    players: list[dict] = []
-                    for assigned_row in assigned_rows:
-                        try:
-                            steam_account_id = int(
-                                row_value(assigned_row, "steamAccountId")
-                            )
-                        except (TypeError, ValueError):
-                            continue
-                        if steam_account_id <= 0:
-                            continue
-                        depth_value = row_value(assigned_row, "depth")
-                        try:
-                            depth = int(depth_value)
-                        except (TypeError, ValueError):
-                            depth = None
-                        highest_match_id_value = row_value(
-                            assigned_row, "highest_match_id"
-                        )
-                        try:
-                            highest_match_id = (
-                                int(highest_match_id_value)
-                                if highest_match_id_value is not None
-                                else None
-                            )
-                        except (TypeError, ValueError):
-                            highest_match_id = None
-                        if highest_match_id is not None and highest_match_id < 0:
-                            highest_match_id = None
-                        players.append(
-                            {
-                                "steamAccountId": steam_account_id,
-                                "depth": depth,
-                                "highestMatchId": highest_match_id,
-                            }
-                        )
+                    ORDER BY hero_refreshed_at ASC NULLS FIRST,
+                             steamAccountId ASC
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE players
+                SET hero_done=FALSE,
+                    assigned_to='refresh',
+                    assigned_at=CURRENT_TIMESTAMP
+                WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                  AND hero_done=TRUE
+                  AND discover_done=TRUE
+                  AND assigned_to IS NULL
+                RETURNING steamAccountId, depth, highest_match_id
+                """,
+                (MAX_HERO_TASK_SIZE,),
+                retry_interval=ASSIGNMENT_RETRY_INTERVAL,
+            ).fetchall()
 
-                    if not players:
-                        loop_count = next_count
-                        continue
+            if not assigned_rows:
+                return None
 
-                    players.sort(
-                        key=lambda entry: (
-                            entry.get("depth") or 0,
-                            entry["steamAccountId"],
-                        )
+            players: list[dict] = []
+            for assigned_row in assigned_rows:
+                try:
+                    steam_account_id = int(row_value(assigned_row, "steamAccountId"))
+                except (TypeError, ValueError):
+                    continue
+                if steam_account_id <= 0:
+                    continue
+                try:
+                    depth = int(row_value(assigned_row, "depth"))
+                except (TypeError, ValueError):
+                    depth = None
+                highest_match_id_value = row_value(assigned_row, "highest_match_id")
+                try:
+                    highest_match_id = (
+                        int(highest_match_id_value)
+                        if highest_match_id_value is not None
+                        else None
                     )
-                    steam_account_ids = [
-                        player["steamAccountId"] for player in players
-                    ]
-                    candidate_payload = {
-                        "type": "refresh_player_data",
-                        "steamAccountId": steam_account_ids[0],
-                        "steamAccountIds": steam_account_ids,
-                        "players": players,
+                except (TypeError, ValueError):
+                    highest_match_id = None
+                if highest_match_id is not None and highest_match_id < 0:
+                    highest_match_id = None
+                players.append(
+                    {
+                        "steamAccountId": steam_account_id,
+                        "depth": depth,
+                        "highestMatchId": highest_match_id,
                     }
-                    first_player = players[0]
-                    if first_player.get("depth") is not None:
-                        candidate_payload["depth"] = first_player["depth"]
-                    if first_player.get("highestMatchId") is not None:
-                        candidate_payload["highestMatchId"] = first_player[
-                            "highestMatchId"
-                        ]
+                )
 
-            if candidate_payload is None:
-                candidate_payload = _assign_next_hero(cur)
+            if not players:
+                return None
 
-            if candidate_payload is None:
-                hero_pending = cur.execute(
-                    """
-                    SELECT 1
-                    FROM players
-                    WHERE hero_done=FALSE
-                      AND assigned_to IS NULL
-                    LIMIT 1
-                    """
-                ).fetchone()
-                if not hero_pending and not discovery_due:
-                    candidate_payload = _assign_discovery(cur)
-                    if candidate_payload is _DISCOVERY_THROTTLED:
-                        loop_count = next_count
-                        continue
+            players.sort(
+                key=lambda entry: (entry.get("depth") or 0, entry["steamAccountId"])
+            )
+            steam_account_ids = [p["steamAccountId"] for p in players]
+            candidate_payload = {
+                "type": "refresh_player_data",
+                "steamAccountId": steam_account_ids[0],
+                "steamAccountIds": steam_account_ids,
+                "players": players,
+            }
+            first = players[0]
+            if first.get("depth") is not None:
+                candidate_payload["depth"] = first["depth"]
+            if first.get("highestMatchId") is not None:
+                candidate_payload["highestMatchId"] = first["highestMatchId"]
 
-            if candidate_payload is not None:
-                _increment_assignment_counter(cur)
-                task_payload = candidate_payload
-                break
+        if candidate_payload and candidate_payload is not _DISCOVERY_THROTTLED:
+            _increment_assignment_counter(cur)
+            return candidate_payload
 
-            if refresh_due or discovery_due:
-                break
-
-            loop_count = next_count
-
-    return task_payload
+    return None
 
 
 def _increment_assignment_counter(cur) -> int:

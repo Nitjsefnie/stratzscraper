@@ -407,7 +407,7 @@ def process_discover_submission(
                     VALUES (%s, %s, FALSE, FALSE)
                     ON CONFLICT (steamAccountId) DO UPDATE
                     SET
-                        depth = excluded.depth
+                        depth = excluded.depth, highest_match_id = NULL, discover_done = FALSE
                     WHERE excluded.depth < players.depth
                     """,
                     child_rows,

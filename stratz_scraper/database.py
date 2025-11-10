@@ -364,16 +364,6 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             # schema lean without leaving behind redundant definitions.
             cur.execute(
                 """
-                DROP INDEX IF EXISTS idx_players_discover_assignment_noncol
-                """
-            )
-            cur.execute(
-                """
-                DROP INDEX IF EXISTS idx_meta_key
-                """
-            )
-            cur.execute(
-                """
                 -- stratz_scraper.web.assignment hero assignment lookups
                 CREATE INDEX IF NOT EXISTS idx_players_hero_unassigned_queue
                     ON players (steamAccountId)
